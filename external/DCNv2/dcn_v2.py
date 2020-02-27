@@ -34,24 +34,17 @@ class _DCNv2(Function):
         dilation,
         deformable_groups,
     ):
-        if use_amp:
-            input = input.float()
-            offset = offset.float()
-            mask = mask.float()
-            weight = weight.float()
-            bias = bias.float()
-
         ctx.stride = _pair(stride)
         ctx.padding = _pair(padding)
         ctx.dilation = _pair(dilation)
         ctx.kernel_size = _pair(weight.shape[2:4])
         ctx.deformable_groups = deformable_groups
         output = _backend.dcn_v2_forward(
-            input,
-            weight,
-            bias,
-            offset,
-            mask,
+            input.float(),
+            weight.float(),
+            bias.float(),
+            offset.float(),
+            mask.float(),
             ctx.kernel_size[0],
             ctx.kernel_size[1],
             ctx.stride[0],
@@ -71,9 +64,6 @@ class _DCNv2(Function):
     @staticmethod
     @once_differentiable
     def backward(ctx, grad_output):
-        if use_amp:
-            grad_output = grad_output.float()
-
         input, offset, mask, weight, bias = ctx.saved_tensors
         (
             grad_input,
@@ -82,12 +72,12 @@ class _DCNv2(Function):
             grad_weight,
             grad_bias,
         ) = _backend.dcn_v2_backward(
-            input,
-            weight,
-            bias,
-            offset,
-            mask,
-            grad_output,
+            input.float(),
+            weight.float(),
+            bias.float(),
+            offset.float(),
+            mask.float(),
+            grad_output.float(),
             ctx.kernel_size[0],
             ctx.kernel_size[1],
             ctx.stride[0],
@@ -250,11 +240,6 @@ class _DCNv2Pooling(Function):
         sample_per_part=4,
         trans_std=0.0,
     ):
-        if use_amp:
-            input = input.float()
-            roi = roi.float()
-            offset = offset.float()
-
         ctx.spatial_scale = spatial_scale
         ctx.no_trans = int(no_trans)
         ctx.output_dim = output_dim
@@ -265,9 +250,9 @@ class _DCNv2Pooling(Function):
         ctx.trans_std = trans_std
 
         output, output_count = _backend.dcn_v2_psroi_pooling_forward(
-            input,
-            rois,
-            offset,
+            input.float(),
+            rois.float(),
+            offset.float(),
             ctx.no_trans,
             ctx.spatial_scale,
             ctx.output_dim,
@@ -286,15 +271,12 @@ class _DCNv2Pooling(Function):
     @staticmethod
     @once_differentiable
     def backward(ctx, grad_output):
-        if use_amp:
-            grad_output = grad_output.float()
-
         input, rois, offset, output_count = ctx.saved_tensors
         grad_input, grad_offset = _backend.dcn_v2_psroi_pooling_backward(
-            grad_output,
-            input,
-            rois,
-            offset,
+            grad_output.float(),
+            input.float(),
+            rois.float(),
+            offset.float(),
             output_count,
             ctx.no_trans,
             ctx.spatial_scale,
