@@ -20,6 +20,7 @@ import torch.utils.data as data
 import numpy as np
 import argparse
 import datetime
+from data.larvae import LarvaeDataset, VideoSampler
 
 # Oof
 import eval as eval_script
@@ -218,15 +219,18 @@ class NetLoss(nn.Module):
     This is so we can more efficiently use DataParallel.
     """
 
-    def __init__(self, net: Yolact, criterion: MultiBoxLoss):
+    def __init__(self, net: Yolact, criterion):
         super().__init__()
 
         self.net = net
         self.criterion = criterion
 
-    def forward(self, images, targets, masks, num_crowds):
+    def forward(self, images, targets=None, masks=None, num_crowds=None):
         preds = self.net(images)
-        losses = self.criterion(self.net, preds, targets, masks, num_crowds)
+        if cfg.gaussian:
+            losses = self.criterion(preds)
+        else:
+            losses = self.criterion(self.net, preds, targets, masks, num_crowds)
         return losses
 
 
@@ -263,19 +267,25 @@ def train():
     if not os.path.exists(args.save_folder):
         os.mkdir(args.save_folder)
 
-    dataset = COCODetection(
-        image_path=cfg.dataset.train_images,
-        info_file=cfg.dataset.train_info,
-        transform=SSDAugmentation(MEANS),
-    )
+    if cfg.gaussian:
+        dataset = LarvaeDataset(root_dir=cfg.dataset.train_images)
+    else:
+        dataset = COCODetection(
+            image_path=cfg.dataset.train_images,
+            info_file=cfg.dataset.train_info,
+            transform=SSDAugmentation(MEANS),
+        )
 
     if args.validation_epoch > 0:
-        setup_eval()
-        val_dataset = COCODetection(
-            image_path=cfg.dataset.valid_images,
-            info_file=cfg.dataset.valid_info,
-            transform=BaseTransform(MEANS),
-        )
+        if cfg.gaussian:
+            val_dataset = LarvaeDataset(root_dir=cfg.dataset.valid_images)
+        else:
+            setup_eval()
+            val_dataset = COCODetection(
+                image_path=cfg.dataset.valid_images,
+                info_file=cfg.dataset.valid_info,
+                transform=BaseTransform(MEANS),
+            )
 
     # Parallel wraps the underlying module, but when saving and loading we don't want that
     yolact_net = Yolact()
@@ -314,12 +324,15 @@ def train():
     optimizer = optim.SGD(
         net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.decay
     )
-    criterion = MultiBoxLoss(
-        num_classes=cfg.num_classes,
-        pos_threshold=cfg.positive_iou_threshold,
-        neg_threshold=cfg.negative_iou_threshold,
-        negpos_ratio=cfg.ohem_negpos_ratio,
-    )
+    if cfg.gaussian:
+        criterion = lambda x: x["losses"]
+    else:
+        criterion = MultiBoxLoss(
+            num_classes=cfg.num_classes,
+            pos_threshold=cfg.positive_iou_threshold,
+            neg_threshold=cfg.negative_iou_threshold,
+            negpos_ratio=cfg.ohem_negpos_ratio,
+        )
 
     if args.batch_alloc is not None:
         args.batch_alloc = [int(x) for x in args.batch_alloc.split(",")]
@@ -339,7 +352,9 @@ def train():
             raise ValueError("amp must be used with CUDA")
         net, optimizer = amp.initialize(net, optimizer, opt_level="O1")
 
-    net = CustomDataParallel(NetLoss(net, criterion))
+    net = NetLoss(net, criterion)
+    if not cfg.gaussian:
+        net = CustomDataParallel(net)
 
     # Initialize everything
     if not cfg.freeze_bn:
@@ -360,14 +375,28 @@ def train():
     # Which learning rate adjustment step are we on? lr' = lr * gamma ^ step_index
     step_index = 0
 
-    data_loader = data.DataLoader(
-        dataset,
-        args.batch_size,
-        num_workers=args.num_workers,
-        shuffle=True,
-        collate_fn=detection_collate,
-        pin_memory=True,
-    )
+    if cfg.gaussian:
+        data_loader = data.DataLoader(
+            dataset,
+            batch_sampler=VideoSampler(dataset, args.batch_size),
+            num_workers=args.num_workers,
+            pin_memory=True,
+        )
+        val_data_loader = data.DataLoader(
+            val_dataset,
+            batch_sampler=VideoSampler(val_dataset, args.batch_size),
+            num_workers=args.num_workers,
+            pin_memory=True,
+        )
+    else:
+        data_loader = data.DataLoader(
+            dataset,
+            args.batch_size,
+            num_workers=args.num_workers,
+            shuffle=True,
+            collate_fn=detection_collate,
+            pin_memory=True,
+        )
 
     save_path = lambda epoch, iteration: SavePath(cfg.name, epoch, iteration).get_path(
         root=args.save_folder
@@ -534,18 +563,22 @@ def train():
             # This is done per epoch
             if args.validation_epoch > 0:
                 if epoch % args.validation_epoch == 0 and epoch > 0:
-                    compute_validation_map(
-                        epoch,
-                        iteration,
-                        yolact_net,
-                        val_dataset,
-                        log if args.log else None,
-                    )
+                    if cfg.gaussian:
+                        compute_validation_map(
+                            epoch,
+                            iteration,
+                            yolact_net,
+                            val_dataset,
+                            log if args.log else None,
+                        )
+                    else:
+                        compute_validation_loss(net, val_data_loader, epoch, iteration)
 
         # Compute validation mAP after training is finished
-        compute_validation_map(
-            epoch, iteration, yolact_net, val_dataset, log if args.log else None
-        )
+        if not cfg.gaussian:
+            compute_validation_map(
+                epoch, iteration, yolact_net, val_dataset, log if args.log else None
+            )
     except KeyboardInterrupt:
         if args.interrupt:
             print("Stopping early. Saving network...")
@@ -582,42 +615,61 @@ def prepare_data(datum, devices: list = None, allocation: list = None):
                 args.batch_size - sum(allocation)
             )  # The rest might need more/less
 
-        images, (targets, masks, num_crowds) = datum
+        if cfg.gaussian:
+            images = datum
+        else:
+            images, (targets, masks, num_crowds) = datum
 
         cur_idx = 0
         for device, alloc in zip(devices, allocation):
             for _ in range(alloc):
                 images[cur_idx] = gradinator(images[cur_idx].to(device))
-                targets[cur_idx] = gradinator(targets[cur_idx].to(device))
-                masks[cur_idx] = gradinator(masks[cur_idx].to(device))
+                if not cfg.gaussian:
+                    targets[cur_idx] = gradinator(targets[cur_idx].to(device))
+                    masks[cur_idx] = gradinator(masks[cur_idx].to(device))
                 cur_idx += 1
 
         if cfg.preserve_aspect_ratio:
             # Choose a random size from the batch
             _, h, w = images[random.randint(0, len(images) - 1)].size()
 
-            for idx, (image, target, mask, num_crowd) in enumerate(
-                zip(images, targets, masks, num_crowds)
-            ):
-                images[idx], targets[idx], masks[idx], num_crowds[idx] = enforce_size(
-                    image, target, mask, num_crowd, w, h
-                )
+            if cfg.gaussian:
+                for idx, (image) in enumerate(zip(images)):
+                    (images[idx],) = enforce_size(w, h, image)
+            else:
+                for idx, (image, target, mask, num_crowd) in enumerate(
+                    zip(images, targets, masks, num_crowds)
+                ):
+                    (
+                        images[idx],
+                        targets[idx],
+                        masks[idx],
+                        num_crowds[idx],
+                    ) = enforce_size(w, h, image, target, mask, num_crowd)
 
         cur_idx = 0
-        split_images, split_targets, split_masks, split_numcrowds = [
-            [None for alloc in allocation] for _ in range(4)
-        ]
+        if cfg.gaussian:
+            split_images = [None for alloc in allocation]
+        else:
+            split_images, split_targets, split_masks, split_numcrowds = [
+                [None for alloc in allocation] for _ in range(4)
+            ]
 
         for device_idx, alloc in enumerate(allocation):
-            split_images[device_idx] = torch.stack(
-                images[cur_idx : cur_idx + alloc], dim=0
-            )
-            split_targets[device_idx] = targets[cur_idx : cur_idx + alloc]
-            split_masks[device_idx] = masks[cur_idx : cur_idx + alloc]
-            split_numcrowds[device_idx] = num_crowds[cur_idx : cur_idx + alloc]
+            if cfg.gaussian:
+                split_images[device_idx] = images[cur_idx : cur_idx + alloc]
+            else:
+                split_images[device_idx] = torch.stack(
+                    images[cur_idx : cur_idx + alloc], dim=0
+                )
+                split_targets[device_idx] = targets[cur_idx : cur_idx + alloc]
+                split_masks[device_idx] = masks[cur_idx : cur_idx + alloc]
+                split_numcrowds[device_idx] = num_crowds[cur_idx : cur_idx + alloc]
 
             cur_idx += alloc
 
+        if cfg.gaussian:
+            return split_images
         return split_images, split_targets, split_masks, split_numcrowds
 
 
@@ -644,11 +696,15 @@ def compute_validation_loss(net, data_loader, criterion):
         # Don't switch to eval mode because we want to get losses
         iterations = 0
         for datum in data_loader:
-            images, targets, masks, num_crowds = prepare_data(datum)
-            out = net(images)
+            if cfg.gaussian:
+                images = prepare_data(datum)
+                losses = net(images)
+            else:
+                images, targets, masks, num_crowds = prepare_data(datum)
+                out = net(images)
 
-            wrapper = ScatterWrapper(targets, masks, num_crowds)
-            _losses = criterion(out, wrapper, wrapper.make_mask())
+                wrapper = ScatterWrapper(targets, masks, num_crowds)
+                _losses = criterion(out, wrapper, wrapper.make_mask())
 
             for k, v in _losses.items():
                 v = v.mean().item()

@@ -14,8 +14,9 @@ from layers.interpolate import InterpolateModule
 from backbone import construct_backbone
 
 import torch.backends.cudnn as cudnn
-from utils import timer
+from utils import timer, gaussian
 from utils.functions import MovingAverage, make_net
+from layers.modules.unsupervised_loss import UnsupervisedLoss
 
 # This is required for Pytorch 1.0.1 on Windows to initialize Cuda on some driver versions.
 # See the bug report here: https://github.com/pytorch/pytorch/issues/17108
@@ -116,9 +117,15 @@ class PredictionModule(nn.Module):
                 )
                 self.bn = nn.BatchNorm2d(out_channels)
 
-            self.bbox_layer = nn.Conv2d(
-                out_channels, self.num_priors * 4, **cfg.head_layer_params
-            )
+            if cfg.gaussian:
+                self.gauss_layer = nn.Conv2d(
+                    out_channels, self.num_priors * 5, **cfg.head_layer_params
+                )
+                self.gauss_activation = gaussian.paramaterActivation()
+            else:
+                self.bbox_layer = nn.Conv2d(
+                    out_channels, self.num_priors * 4, **cfg.head_layer_params
+                )
             self.conf_layer = nn.Conv2d(
                 out_channels,
                 self.num_priors * self.num_classes,
@@ -164,9 +171,14 @@ class PredictionModule(nn.Module):
                         )
                     )
 
-            self.bbox_extra, self.conf_extra, self.mask_extra = [
-                make_extra(x) for x in cfg.extra_layers
-            ]
+            if cfg.gaussian:
+                self.gauss_extra, self.conf_extra, self.mask_extra = [
+                    make_extra(x) for x in cfg.extra_layers
+                ]
+            else:
+                self.bbox_extra, self.conf_extra, self.mask_extra = [
+                    make_extra(x) for x in cfg.extra_layers
+                ]
 
             if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_coeff_gate:
                 self.gate_layer = nn.Conv2d(
@@ -215,16 +227,25 @@ class PredictionModule(nn.Module):
             # TODO: Possibly switch this out for a product
             x = a + b
 
-        bbox_x = src.bbox_extra(x)
         conf_x = src.conf_extra(x)
         mask_x = src.mask_extra(x)
 
-        bbox = (
-            src.bbox_layer(bbox_x)
-            .permute(0, 2, 3, 1)
-            .contiguous()
-            .view(x.size(0), -1, 4)
-        )
+        if cfg.gaussian:
+            gauss_x = src.gauss_extra(x)
+            gauss = src.gauss_activation(
+                src.gauss_layer(gauss_x)
+                .permute(0, 2, 3, 1)
+                .contiguous()
+                .view(x.size(0), -1, 5)
+            )
+        else:
+            bbox_x = src.bbox_extra(x)
+            bbox = (
+                src.bbox_layer(bbox_x)
+                .permute(0, 2, 3, 1)
+                .contiguous()
+                .view(x.size(0), -1, 4)
+            )
         conf = (
             src.conf_layer(conf_x)
             .permute(0, 2, 3, 1)
@@ -295,9 +316,13 @@ class PredictionModule(nn.Module):
                 value=0,
             )
 
-        priors = self.make_priors(conv_h, conv_w, x.device)
-
-        preds = {"loc": bbox, "conf": conf, "mask": mask, "priors": priors}
+        preds = {"conf": conf, "mask": mask}
+        if cfg.gaussian:
+            preds["loc"] = gauss
+        else:
+            priors = self.make_priors(conv_h, conv_w, x.device)
+            preds["priors"] = priors
+            preds["loc"] = bbox
 
         if cfg.use_mask_scoring:
             preds["score"] = score
@@ -532,6 +557,9 @@ class Yolact(nn.Module):
         if cfg.freeze_bn:
             self.freeze_bn()
 
+        if cfg.gaussian:
+            self.unsup_layer = UnsupervisedLoss()
+
         # Compute mask_dim here and add it back to the config. Make sure Yolact's constructor is called early!
         if cfg.mask_type == mask_type.direct:
             cfg.mask_dim = cfg.mask_size ** 2
@@ -758,7 +786,9 @@ class Yolact(nn.Module):
                     proto_out = torch.cat([proto_out, torch.ones(*bias_shape)], -1)
 
         with timer.env("pred_heads"):
-            pred_outs = {"loc": [], "conf": [], "mask": [], "priors": []}
+            pred_outs = {"loc": [], "conf": [], "mask": []}
+            if not cfg.gaussian:
+                pred_outs["priors"] = []
 
             if cfg.use_mask_scoring:
                 pred_outs["score"] = []
@@ -809,6 +839,9 @@ class Yolact(nn.Module):
 
             if cfg.use_semantic_segmentation_loss:
                 pred_outs["segm"] = self.semantic_seg_conv(outs[0])
+
+            if cfg.gaussian:
+                pred_outs["losses"] = self.unsup_layer(x, pred_outs)
 
             return pred_outs
         else:

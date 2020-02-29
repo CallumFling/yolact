@@ -399,6 +399,14 @@ taco_dataset = dataset_base.copy(
     }
 )
 
+larvae_dataset = dataset_base.copy(
+    {
+        "train_images": "/home/rtx/dataset/train",
+        "valid_images": "/home/rtx/dataset/val",
+        "class_names": ["foreground"],
+    }
+)
+
 # ----------------------- TRANSFORMS ----------------------- #
 
 resnet_transform = Config(
@@ -843,6 +851,7 @@ coco_base_config = Config(
         "maskious_to_train": -1,
         # Use 16-bit precision
         "use_amp": True,
+        "gaussian":False
     }
 )
 
@@ -1024,6 +1033,21 @@ yolact_plus_resnet50_config = yolact_plus_base_config.copy(
     }
 )
 
+unsupervised_config = yolact_plus_resnet50_config.copy(
+    {
+        "num_classes": 1 + 1,
+        "name": "unsupervised",
+        "positive": 1e-3,  # Ensure positive-semi definite
+        "gaussian": True,
+        "sampling_grid": [128, 128],
+        "use_maskiou": False,
+        "iou_middle_features": 15,
+        "iou_layer_samples": 10,
+        "iou_layer_train_dim": [20, 20],
+        "gauss_iou_samples": 20,
+        # "preserve_aspect_ratio": True,
+    }
+)
 
 # Default config
 cfg = yolact_base_config.copy()
