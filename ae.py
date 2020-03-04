@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from layers.interpolate import InterpolateModule as Interpolate
-from utils.gaussian import flipDiagonal, left_pad
+from utils.gaussian import gauss_loc
 
-# from data.config import cfg
+from data import cfg
 
 
 class AutoEncoder(nn.Module):
@@ -55,13 +55,15 @@ class AutoEncoder(nn.Module):
 
         # batch, priors, img_h, img_w, 2
         grid = samplingGrid(loc)
-        gridShape = list(grid.Shape)
+        gridShape = list(grid.shape)
 
-        locShape = list(loc.shape)
+        # locShape = list(loc.shape)
         originalShape = list(original.shape)
 
         # Dim: Batch, Priors, 3, img_h, img_w
-        original = original.expand([locShape[1]] + originalShape).permute(1, 0, 2, 3, 4)
+        original = original.expand([gridShape[1]] + originalShape).permute(
+            1, 0, 2, 3, 4
+        )
         # Dim: Batch*Priors, 3, img_h, img_w
         # unsup: changed view to reshape
         original = original.reshape(-1, *originalShape[1:])
@@ -70,21 +72,25 @@ class AutoEncoder(nn.Module):
 
         # batch*priors, img_h,img_w,2
         grid = grid.reshape(-1, *gridShape[2:])
-        print(original.shape)
-        print(grid.shape)
 
         # Dim: Batch*priors,3,H,W
-        sampled = F.grid_sample(original, grid)
+        sampled = F.grid_sample(original, grid, align_corners=False)
 
+        # try:
         result = self.encoder(sampled)
+        # except RuntimeError:
+        # breakpoint()
         result = self.decoder(result)
-        result = F.interpolate(result, size=cfg.sampling_grid, mode="bilinear")
+        result = F.interpolate(
+            result, size=cfg.sampling_grid, mode="bilinear", align_corners=False
+        )
 
         # Dim Batch*Prior, 3, H, W
         loss = F.mse_loss(sampled, result, reduction="none")
 
         # Dim Batch*Prior
-        loss = loss.sum(dim=(1, 2, 3))
+        loss = torch.mean(loss, dim=(1, 2, 3))
+        # loss = loss.sum(loss)
 
         # Conf: batch,prior (only 1 class)
         # Confidence in foreground
@@ -94,35 +100,36 @@ class AutoEncoder(nn.Module):
         # conf = conf.view(-1)
 
         # Scale loss by confidence, and by the number of Batches and Priors
+        if cfg.use_amp:
+            return loss.half()
         return loss
         # return loss / (locShape[0] * locShape[1])
 
 
 def samplingGrid(loc):
     # img_dim in tensor form
-    print(loc.shape)
-
     # Batch, Priors
     locShape = list(loc.shape)[:-1]
 
     # H, W
     gridShape = cfg.sampling_grid
 
-    # Batch, Priors, 2
-    mean = loc[:, :, :2]
-    # ((Batch,Priors,2),(Batch,Priors,2))
-    cov = (loc[:, :, 2:4], left_pad(loc[:, :, 4:]))
-    # (Batch,Priors, 2(add this new dimension),2)
-    cov = flipDiagonal(torch.stack(cov, dim=2))
-
-    # Ensure positive semi-definite
-    cov = cov + (cfg.positive * torch.eye(2))
-
+    mean, cov = gauss_loc(loc)
     # Batch*Priors, 2,2
     cov = cov.view(-1, 2, 2)
 
     # Batch*Priors, 2,2
-    cholesky = torch.cholesky(cov)
+    # if cfg.use_amp:
+    # cholesky = torch.cholesky(cov.float()).half()
+    # else:
+    try:
+        cholesky = torch.cholesky(cov.float())
+    except:
+        print("Excepted:")
+        cholesky = torch.zeros_like(cov)
+    if torch.isnan(cholesky).any():
+        print("Not Symmetric Positive Semi-definite")
+        cholesky[torch.isnan(cholesky)] = 0
 
     # Batch*Priors, 2
     mean = mean.view(-1, 2)
@@ -132,6 +139,8 @@ def samplingGrid(loc):
         torch.linspace(-1, 1, cfg.sampling_grid[1]),
     )
     i, j = i.contiguous(), j.contiguous()
+    # if cfg.use_amp:
+    # i, j = i.half(), j.half()
 
     # mesh,2
     # becomes tensor of [(0,0),(1,0),(2,0)...]
@@ -150,5 +159,7 @@ def samplingGrid(loc):
     transformed_coords = transformed_coords.permute(1, 0, 2)
 
     # Dim Batch*Prior, H,W,2->batch, priors, img_h, img_w, 2
-    reshaped_coords = transformed_coords.view([-1] + cfg.sampling_grid + [2])
+    reshaped_coords = transformed_coords.view(
+        [locShape[0]] + [-1] + cfg.sampling_grid + [2]
+    )
     return reshaped_coords

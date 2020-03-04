@@ -119,9 +119,8 @@ class PredictionModule(nn.Module):
 
             if cfg.gaussian:
                 self.gauss_layer = nn.Conv2d(
-                    out_channels, self.num_priors * 5, **cfg.head_layer_params
+                    out_channels, self.num_priors * 6, **cfg.head_layer_params
                 )
-                self.gauss_activation = gaussian.paramaterActivation()
             else:
                 self.bbox_layer = nn.Conv2d(
                     out_channels, self.num_priors * 4, **cfg.head_layer_params
@@ -232,11 +231,11 @@ class PredictionModule(nn.Module):
 
         if cfg.gaussian:
             gauss_x = src.gauss_extra(x)
-            gauss = src.gauss_activation(
+            gauss = (
                 src.gauss_layer(gauss_x)
                 .permute(0, 2, 3, 1)
                 .contiguous()
-                .view(x.size(0), -1, 5)
+                .view(x.size(0), -1, 6)
             )
         else:
             bbox_x = src.bbox_extra(x)
@@ -252,6 +251,8 @@ class PredictionModule(nn.Module):
             .contiguous()
             .view(x.size(0), -1, self.num_classes)
         )
+        if cfg.gaussian:
+            conf = torch.sigmoid(conf)
 
         if cfg.eval_mask_branch:
             mask = (
@@ -750,6 +751,8 @@ class Yolact(nn.Module):
         cfg._tmp_img_w = img_w
 
         with timer.env("backbone"):
+            if cfg.use_amp:
+                x = x.half()
             outs = self.backbone(x)
 
         if cfg.fpn is not None:

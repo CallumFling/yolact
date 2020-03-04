@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 import torchvision.transforms.functional as TF
 from skimage import io
 import accimage
+from data.config import cfg
 
 
 class LarvaeDataset(Dataset):
@@ -42,7 +43,11 @@ class LarvaeDataset(Dataset):
         image = accimage.Image(img_name)
         # Get a square
         image = TF.center_crop(image, min(image.height, image.width))
-        return TF.to_tensor(image)
+        image = TF.to_tensor(image)
+        if cfg.use_amp:
+            return image.half()
+        else:
+            return image
 
 
 class VideoSampler(Sampler):

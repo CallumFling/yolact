@@ -25,6 +25,9 @@ from data.larvae import LarvaeDataset, VideoSampler
 # Oof
 import eval as eval_script
 
+torch.autograd.set_detect_anomaly(True)
+torch.backends.cudnn.enabled = False
+
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -198,7 +201,10 @@ if args.batch_size // torch.cuda.device_count() < 6:
         )
     cfg.freeze_bn = True
 
-loss_types = ["B", "C", "M", "P", "D", "E", "S", "I"]
+if cfg.gaussian:
+    loss_types = ["iou_loss", "ae_loss", "variance_loss"]
+else:
+    loss_types = ["B", "C", "M", "P", "D", "E", "S", "I"]
 
 if torch.cuda.is_available():
     if args.cuda:
@@ -359,7 +365,10 @@ def train():
     # Initialize everything
     if not cfg.freeze_bn:
         yolact_net.freeze_bn()  # Freeze bn so we don't kill our means
-    yolact_net(torch.zeros(1, 3, cfg.max_size, cfg.max_size).cuda())
+    if cfg.gaussian:
+        yolact_net(torch.zeros(1, 3, cfg.max_size, cfg.max_size).cuda())
+    else:
+        yolact_net(torch.zeros(1, 3, cfg.max_size, cfg.max_size).cuda())
     if not cfg.freeze_bn:
         yolact_net.freeze_bn(True)
 
@@ -416,6 +425,11 @@ def train():
                 continue
 
             for datum in data_loader:
+                # import cv2
+
+                # breakpoint()
+                if cfg.gaussian:
+                    datum = datum.cuda()
                 # Stop if we've reached an epoch if we're resuming from start_iter
                 if iteration == (epoch + 1) * epoch_size:
                     break
