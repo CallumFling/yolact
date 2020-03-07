@@ -21,12 +21,31 @@ import numpy as np
 import argparse
 import datetime
 from data.larvae import LarvaeDataset, VideoSampler
+import pdb
+
+import sys
+from gpu_profile import gpu_profile
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["GPU_DEBUG"] = "0"
+
 
 # Oof
 import eval as eval_script
 
+# @rayandrew
+# turn off this line because it make training fails
+# it detecs NaN value in backpropagation tensors
+# you need to check deeper into this case
+# uncomment if you think NaN value is solved in
+# every backpropagation tensor
 torch.autograd.set_detect_anomaly(True)
-torch.backends.cudnn.enabled = False
+
+# so this thing can be set into True
+# if the F.grid_sample calculation is not exploded
+# check ae.py for further info
+torch.backends.cudnn.enabled = True
+# torch.backends.cudnn.enabled = False
 
 
 def str2bool(v):
@@ -426,8 +445,8 @@ def train():
 
             for datum in data_loader:
                 # import cv2
-
-                # breakpoint()
+                # __import__("pdb").set_trace()
+                # pdb.set_trace()
                 if cfg.gaussian:
                     datum = datum.cuda()
                 # Stop if we've reached an epoch if we're resuming from start_iter
@@ -763,4 +782,5 @@ def setup_eval():
 
 
 if __name__ == "__main__":
+    # sys.settrace(gpu_profile)
     train()

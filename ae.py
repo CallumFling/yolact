@@ -5,29 +5,40 @@ from layers.interpolate import InterpolateModule as Interpolate
 from utils.gaussian import gauss_loc
 
 from data import cfg
+import pdb
 
 
 class AutoEncoder(nn.Module):
     def __init__(self):
         super(AutoEncoder, self).__init__()
 
-        self.encoder = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+        self.encoder_element = [
+            # self.encoder = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=6, padding=1),
             nn.ReLU(True),
             nn.MaxPool2d(2),
-            nn.Conv2d(32, 16, kernel_size=3, padding=1),
+            nn.Conv2d(32, 16, kernel_size=6, padding=1),
             nn.ReLU(True),
             nn.MaxPool2d(2),
-            nn.Conv2d(16, 8, kernel_size=3, padding=1),
+            nn.Conv2d(16, 8, kernel_size=6, padding=1),
             nn.ReLU(True),
             nn.MaxPool2d(2),
-            nn.Conv2d(8, 4, kernel_size=3, padding=1),
+            nn.Conv2d(8, 4, kernel_size=6, padding=1),
             nn.ReLU(True),
             nn.MaxPool2d(2),
-            nn.Conv2d(4, 2, kernel_size=3, padding=1),
+            nn.Conv2d(4, 2, kernel_size=6, padding=1),
             nn.ReLU(True),
             nn.MaxPool2d(2),
-        )
+            # )
+        ]
+
+        def encoder(x):
+            for i, v in enumerate(self.encoder_element):
+                print(i)
+                x = v(x)
+            return x
+
+        self.encoder = encoder
 
         self.decoder = nn.Sequential(
             Interpolate(mode="bilinear", scale_factor=2),
@@ -73,14 +84,45 @@ class AutoEncoder(nn.Module):
         # batch*priors, img_h,img_w,2
         grid = grid.reshape(-1, *gridShape[2:])
 
+        print(
+            "IS NAN, original {} grid {}".format(
+                torch.isnan(original).any(), torch.isnan(grid).any()
+            )
+        )
+        print(
+            "IS INF, original {} grid {}".format(
+                torch.isinf(original).any(), torch.isinf(grid).any()
+            )
+        )
+
+        # @rayandrew
+        # so my analysis here
+        # F.grid_sample with default mode=bilinear is exploded
+        # no oom issue here
+
+        # NOTE: Using padding border, not bilinear
         # Dim: Batch*priors,3,H,W
-        sampled = F.grid_sample(original, grid, align_corners=False)
+        sampled = F.grid_sample(
+            original, grid, align_corners=False, padding_mode="border", mode="bilinear"
+        )  # this seem the fixes
+
+        print("Sampled NAN", torch.isnan(sampled).any())
+
+        # sampled[torch.isinf(sampled)] = 0
+        # safe_sampled = torch.where(torch.isfinite(sampled), torch.zeros_like(sampled), sampled)
 
         # try:
+        print(
+            "Original {} Grid {} Sampled shape {}".format(
+                original.shape, grid.shape, sampled.shape
+            )
+        )
+        # print("SAMPLED {}".format(sampled))
         result = self.encoder(sampled)
         # except RuntimeError:
-        # breakpoint()
+        # pdb.set_trace()
         result = self.decoder(result)
+        # NOTE: Using Nearest, not Bilinear
         result = F.interpolate(
             result, size=cfg.sampling_grid, mode="bilinear", align_corners=False
         )
@@ -114,22 +156,16 @@ def samplingGrid(loc):
     # H, W
     gridShape = cfg.sampling_grid
 
-    mean, cov = gauss_loc(loc)
+    # mean, cov = gauss_loc(loc)
+    mean, cholesky = gauss_loc(loc)
     # Batch*Priors, 2,2
-    cov = cov.view(-1, 2, 2)
+    # cov = cov.view(-1, 2, 2)
+    cholesky = cholesky.view(-1, 2, 2)
 
     # Batch*Priors, 2,2
     # if cfg.use_amp:
     # cholesky = torch.cholesky(cov.float()).half()
     # else:
-    try:
-        cholesky = torch.cholesky(cov.float())
-    except:
-        print("Excepted:")
-        cholesky = torch.zeros_like(cov)
-    if torch.isnan(cholesky).any():
-        print("Not Symmetric Positive Semi-definite")
-        cholesky[torch.isnan(cholesky)] = 0
 
     # Batch*Priors, 2
     mean = mean.view(-1, 2)

@@ -5,7 +5,16 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 import torchvision.transforms.functional as TF
 from skimage import io
 import accimage
-from data.config import cfg
+
+try:
+    from data.config import cfg
+except ImportError:
+
+    class Config:
+        pass
+
+    cfg = Config()
+    cfg.use_amp = False
 
 
 class LarvaeDataset(Dataset):

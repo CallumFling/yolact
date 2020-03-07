@@ -7,6 +7,7 @@ from data.config import cfg
 from utils import gaussian, timer
 import math
 from ae import AutoEncoder
+import pdb
 
 
 class UnsupervisedLoss(nn.Module):
@@ -233,16 +234,16 @@ class UnsupervisedLoss(nn.Module):
         final_scale = iou * conf_matrix.triu(1)
 
         # batch*num_priors
-        try:
-            ae_loss = self.autoencoder(original.unsqueeze(0), loc[keep].unsqueeze(0))
-        except RuntimeError:
-            breakpoint()
+        # try:
+        ae_loss = self.autoencoder(original.unsqueeze(0), loc[keep].unsqueeze(0))
+        # except RuntimeError:
+        # pdb.set_trace()
         # ae_loss but in scores
         ae_grid = torch.zeros_like(final_scale)
         try:
             ae_grid[keep] = ae_loss.unsqueeze(1).repeat(1, ae_grid.size(1))
         except RuntimeError:
-            breakpoint()
+            pdb.set_trace()
         ae_grid = ae_grid * final_scale
 
         return torch.sum(ae_grid)
@@ -277,6 +278,7 @@ class VarianceLoss(nn.Module):
         # These are concatenated, not Pad_Sequenced on purpose.
         loc = torch.cat([a["loc"] for a in predictions], dim=0)
 
+        print("loc", torch.isnan(loc).any())
         # batch, num_priors, i,j, with Padded sequence
         unnormalGaussian = pad_sequence(
             # Split results by shapes of the priors
@@ -304,6 +306,8 @@ class VarianceLoss(nn.Module):
         assembledMask = gaussian.lincomb(proto=proto, masks=masks)
         assembledMask = torch.sigmoid(assembledMask)
         print("assembledMask", torch.isnan(assembledMask).any())
+        if torch.isnan(assembledMask).any():
+            __import__("pdb").set_trace()
         print("assembledMask positive", (assembledMask >= 0).all())
 
         # Dim: Batch, Anchors, i, j
@@ -341,7 +345,7 @@ class VarianceLoss(nn.Module):
         print("finalConf", torch.isnan(finalConf).any())
         print("finalconf positive", (finalConf >= 0).all())
         # if not (finalConf >= 0).all():
-        # breakpoint()
+        # pdb.set_trace()
 
         # finalConf = 1 - torch.sum(F.softmax(logConf, dim=1) * maskConfidence, dim=1)
 
@@ -351,8 +355,8 @@ class VarianceLoss(nn.Module):
         resizedConf = F.interpolate(
             finalConf.unsqueeze(1), resizeShape, mode="bilinear", align_corners=False
         )[:, 0]
-        print("resizedConf positive", (resizedConf >= 0).all())
         print("resizedConf", torch.isnan(resizedConf).any())
+        print("resizedConf positive", (resizedConf >= 0).all())
         # if cfg.use_amp:
         # finalConf = finalConf.half()
         # resizedConf = resizedConf.half()
@@ -360,11 +364,12 @@ class VarianceLoss(nn.Module):
         # unsup: AGGREGATING RESULTS BETWEEN BATCHES HERE
         # Dim, h, w
         totalConf = torch.sum(resizedConf, dim=0)
-        print("totalconf all positive", (totalConf >= 0).all())
         print("totalConf", torch.isnan(totalConf).any())
+        print("totalconf all positive", (totalConf >= 0).all())
 
         # Dim 3, img_h, img_w
         print("original", torch.isnan(original).any())
+        print("original all positive", (original >= 0).all())
         weightedMean = torch.einsum("abcd,acd->bcd", original, resizedConf)
         print("weightedMean", torch.isnan(weightedMean).any())
 
@@ -377,6 +382,12 @@ class VarianceLoss(nn.Module):
         # Batch,3,img_h, image w
         weightedDiff = torch.einsum("abcd,acd->abcd", squaredDiff, resizedConf)
         print("weightedDiff", torch.isnan(weightedDiff).any())
+        # print("TOTAL CONF {}".format(totalConf + cfg.positive))
+        # print("CFG POSITIVE {}".format(cfg.positive))
+        # weightedDiff = torch.where(torch.isnan(weightedDiff), torch.zeros_like(totalConf), weightedDiff)
+        # totalConf = torch.where(torch.isnan(totalConf), torch.ones_like(totalConf), totalConf)
+        # sTotalConf = torch.tensor(totalConf.shape).fill_(cfg.positive) if torch.isnan(totalConf).any() else (totalConf + cfg.positive)
+        print("TOTAL_CONF {}".format(totalConf))
         weightedVariance = weightedDiff / (totalConf + cfg.positive)
         print("weightedVariance", torch.isnan(weightedVariance).any())
 

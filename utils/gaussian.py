@@ -6,7 +6,6 @@ import torch.nn.functional as F
 from torch.distributions.multivariate_normal import _batch_mahalanobis
 from data.config import cfg, mask_type
 
-
 # class paramaterActivation(nn.Module):
 # def __init__(self):
 # super(paramaterActivation, self).__init__()
@@ -48,12 +47,40 @@ def lincomb(predictions=None, proto=None, masks=None):
 def gauss_loc(loc):
     # loc shape: torch.size(batch_size,num_priors,6)
     locShape = list(loc.shape)
+    loc = F.tanh(loc)
     mean = loc[:, :, :2]
     cov = loc[:, :, 2:].view(*locShape[:2], 2, 2)
     cov = (cov.permute(0, 1, 3, 2)) @ cov
     # cov = cov + torch.eye(2) * cfg.positive
-    cov = torch.abs(cov)
-    return mean, cov
+    cov = torch.where(
+        # Where the diagonal is negative
+        torch.diag_embed(torch.diagonal(cov, dim1=-1, dim2=-2)) < 0,
+        torch.abs(cov),
+        cov,
+    )
+    cholesky = torch.cholesky(cov.float())
+    # except:
+    # print("Excepted:")
+    # cholesky = torch.zeros_like(cov)
+    if torch.isnan(cholesky).any():
+        print("Not Symmetric Positive Semi-definite")
+        __import__("pdb").set_trace()
+
+        # @rayandrews
+        # this is inplace operation
+        # will result error in backprop!
+        # cholesky[torch.isnan(cholesky)] = 0
+
+        # below is the safe version
+        cholesky = torch.where(
+            torch.isnan(cholesky), torch.zeros_like(cholesky), cholesky
+        )
+
+    print("CHOLESKY {}".format(torch.isnan(cholesky).any()))
+    # cov = torch.abs(cov)
+    print("mean", torch.isnan(mean).any())
+    print("cov", torch.isnan(cov).any())
+    return mean, cholesky
 
 
 def mahalanobisGrid(predictions=None, maskShape=None, loc=None):
@@ -71,9 +98,10 @@ def mahalanobisGrid(predictions=None, maskShape=None, loc=None):
     # cov = (loc[:, :, 2:4], left_pad(loc[:, :, 4:]))
     # cov = flipDiagonal(torch.stack(cov, dim=2))
 
-    mean, cov = gauss_loc(loc)
+    # mean, cov = gauss_loc(loc)
+    mean, cholesky = gauss_loc(loc)
     # Resize to Batch Muahalanobis Specs
-    cov = cov.view(-1, 1, 2, 2)
+    cholesky = cholesky.view(-1, 1, 2, 2)
     mean = mean.view(-1, 1, 2)
 
     j, i = torch.meshgrid(
@@ -84,15 +112,22 @@ def mahalanobisGrid(predictions=None, maskShape=None, loc=None):
     # becomes (0,0),(1,0),(2,0)...
     coordinate_list = torch.stack((i.view(-1), j.view(-1)), dim=1)
     diff = coordinate_list - mean
+    print("coordinate_list", torch.isnan(coordinate_list).any())
+    print("diff", torch.isnan(diff).any())
 
     # this is Squared Mahalanobis
     if cfg.use_amp:
-        mahalanobis = -0.5 * _batch_mahalanobis(cov.float(), diff.float()).half()
+        mahalanobis = -0.5 * _batch_mahalanobis(cholesky.float(), diff.float()).half()
     else:
-        mahalanobis = -0.5 * _batch_mahalanobis(cov, diff)
+        mahalanobis = -0.5 * _batch_mahalanobis(cholesky, diff)
 
     # Dim: Batch, Anchors, i, j
-    return mahalanobis.view(*locShape, *maskShape)
+    result = mahalanobis.view(*locShape, *maskShape)
+    print("mahalanobisGrid", torch.isnan(mahalanobis).any())
+    if torch.isnan(mahalanobis).any():
+        __import__("pdb").set_trace()
+
+    return result
 
 
 def unnormalGaussian(predictions=None, maskShape=None, loc=None):
