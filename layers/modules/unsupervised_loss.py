@@ -31,6 +31,7 @@ class UnsupervisedLoss(nn.Module):
             raise ValueError("nms_threshold must be non negative.")
 
     def forward(self, original, predictions):
+        __import__("pdb").set_trace()
         # loc shape: torch.size(batch_size,num_priors,6)
         loc_data = predictions["loc"]
         # conf shape: torch.size(batch_size,num_priors,num_classes)

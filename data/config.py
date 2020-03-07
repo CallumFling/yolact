@@ -1039,7 +1039,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "max_num_detections": 15,
         # How the loss of a single detection changes loss of others
         # "max_num_autoencoder_spill": 15,
-        "nms_top_k": 10,
+        "nms_top_k": 100,
         "name": "unsupervised",
         "positive": 1e-3,  # Ensure positive-semi definite
         "gaussian": True,
@@ -1049,7 +1049,8 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "iou_layer_samples": 10,
         "iou_layer_train_dim": [20, 20],
         "gauss_iou_samples": 20,
-        "max_size": 300
+        "max_size": 300,
+        "use_semantic_segmentation_loss": False,
         # "preserve_aspect_ratio": True,
     }
 )

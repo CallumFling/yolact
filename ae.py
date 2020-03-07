@@ -11,9 +11,7 @@ import pdb
 class AutoEncoder(nn.Module):
     def __init__(self):
         super(AutoEncoder, self).__init__()
-
-        self.encoder_element = [
-            # self.encoder = nn.Sequential(
+        self.encoder = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=6, padding=1),
             nn.ReLU(True),
             nn.MaxPool2d(2),
@@ -29,16 +27,7 @@ class AutoEncoder(nn.Module):
             nn.Conv2d(4, 2, kernel_size=6, padding=1),
             nn.ReLU(True),
             nn.MaxPool2d(2),
-            # )
-        ]
-
-        def encoder(x):
-            for i, v in enumerate(self.encoder_element):
-                print(i)
-                x = v(x)
-            return x
-
-        self.encoder = encoder
+        )
 
         self.decoder = nn.Sequential(
             Interpolate(mode="bilinear", scale_factor=2),
