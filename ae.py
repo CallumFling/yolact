@@ -123,6 +123,9 @@ class AutoEncoder(nn.Module):
         # loss = torch.mean(loss, dim=(1, 2, 3))
         loss = loss.sum(dim=(1, 2, 3))
 
+        # Dim Batch,Priors
+        loss = loss.view(*gridShape)
+
         # Conf: batch,prior (only 1 class)
         # Confidence in foreground
         # conf = predictions["conf"][:, :, 1]

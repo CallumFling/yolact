@@ -45,6 +45,7 @@ def lincomb(predictions=None, proto=None, masks=None):
 
 
 def gauss_loc(loc):
+    # __import__("pdb").set_trace()
     # loc shape: torch.size(batch_size,num_priors,6)
     locShape = list(loc.shape)
     loc = torch.tanh(loc)

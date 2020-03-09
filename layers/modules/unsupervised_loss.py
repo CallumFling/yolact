@@ -31,6 +31,7 @@ class UnsupervisedLoss(nn.Module):
 
     def forward(self, original, predictions):
         global iter_counter
+        losses = {}
         # loc shape: torch.size(batch_size,num_priors,6)
         loc_data = predictions["loc"]
         # conf shape: torch.size(batch_size,num_priors,num_classes)
@@ -43,40 +44,28 @@ class UnsupervisedLoss(nn.Module):
         # proto* shape: torch.size(batch_size,mask_h,mask_w,mask_dim)
         proto_data = predictions["proto"]
 
-        losses = {"ae_loss": 0}
-        out = []
-
         with timer.env("Detect"):
-            batch_size = loc_data.size(0)
+            # decoded boxes with size [num_priors, 4]
+            all_results = self.detect(conf_data, loc_data, mask_data)
+            keep = all_results["keep"]
+            # AE Scaled loss needs non-kept Detections
+            losses["ae_loss"] = self.ae_scaled_loss(
+                original[batch_idx],
+                all_results["iou"],
+                all_results["keep"],
+                all_results["loc"],
+                all_results["conf"],
+            )
 
-            for batch_idx in range(batch_size):
-                # decoded boxes with size [num_priors, 4]
-                all_results = self.detect(
-                    conf_data[batch_idx], loc_data[batch_idx], mask_data[batch_idx]
-                )
-                keep = all_results["keep"]
-                # AE Scaled loss needs non-kept Detections
-                losses["ae_loss"] += (
-                    self.ae_scaled_loss(
-                        original[batch_idx],
-                        all_results["iou"],
-                        all_results["keep"],
-                        all_results["loc"],
-                        all_results["conf"],
-                    )
-                    / 100
-                )
+            # IoU not included because not needed by variance
+            filtered_result = {
+                "loc": all_results["loc"][keep],
+                "mask": all_results["mask"][keep],
+                "conf": all_results["conf"][keep],
+                "proto": proto_data[batch_idx],
+            }
+            out.append(filtered_result)
 
-                # IoU not included because not needed by variance
-                filtered_result = {
-                    "loc": all_results["loc"][keep],
-                    "mask": all_results["mask"][keep],
-                    "conf": all_results["conf"][keep],
-                    "proto": proto_data[batch_idx],
-                }
-                out.append(filtered_result)
-
-        # losses["ae_loss"] = predictions["ae_loss"]
         losses["variance_loss"] = self.variance(original, out) / 100
         print(losses)
         iter_counter += 1
@@ -94,40 +83,43 @@ class UnsupervisedLoss(nn.Module):
         top_k_conf = cfg.nms_top_k_conf
         top_k_iou = cfg.nms_top_k_iou
 
-        sorted_conf, idx = conf.sort(descending=True)
-        idx = idx[:top_k_conf].contiguous()
-        sorted_conf = sorted_conf[:top_k_conf]
-        # loc with size [num_priors, 4], or 5 for unsup
-        sorted_loc = loc[idx, :]
+        # __import__("pdb").set_trace()
+        # conf shape: torch.size(batch_size,num_priors)
+        # NOTE: Potential sorting inefficiency
+        sorted_conf, idx = conf.sort(dim=-1, descending=True)
+        sorted_conf = sorted_conf[:, :top_k_conf]
+        # loc with size [batch,num_priors, 4], or 5 for unsup
+        sorted_loc = loc[idx][:, :top_k_conf]
         # masks shape: Shape: [num_priors, mask_dim]
-        sorted_mask = mask[idx, :]
+        sorted_mask = mask[idx][:, :top_k_conf]
 
-        # Dim: Detections, i,j
-        gauss = gaussian.unnormalGaussian(
-            maskShape=cfg.iou_gauss_dim, loc=sorted_loc.unsqueeze(0),
-        )[0]
+        # Dim: Batch, Detections, i,j
+        gauss = gaussian.unnormalGaussian(maskShape=cfg.iou_gauss_dim, loc=sorted_loc)
 
         gaussShape = list(gauss.shape)
         # jaccard overlap: (tensor) Shape: [box_a.size(0), box_b.size(0)]
-        gauss_rows = gauss.view(1, gaussShape[0], *gaussShape[1:]).repeat(
-            gaussShape[0], 1, 1, 1
-        )
-        gauss_cols = gauss.view(gaussShape[0], 1, *gaussShape[1:]).repeat(
-            1, gaussShape[0], 1, 1
-        )
-        # Detections, Detections, 2, I,J
-        gauss_grid = torch.stack([gauss_rows, gauss_cols], dim=2)
+        gauss_rows = gauss.view(
+            gaussShape[0], 1, gaussShape[1], *gaussShape[2:]
+        ).repeat(1, gaussShape[1], 1, 1, 1)
+        gauss_cols = gauss.view(
+            gaussShape[0], gaussShape[1], 1, *gaussShape[2:]
+        ).repeat(1, 1, gaussShape[1], 1, 1)
+        # Batch, Detections, Detections, 2, I,J
+        gauss_grid = torch.stack([gauss_rows, gauss_cols], dim=3)
 
         # [0] is to remove index
-        gauss_intersection = torch.sum(torch.min(gauss_grid, dim=2)[0], dim=[2, 3])
-        gauss_union = torch.sum(torch.max(gauss_grid, dim=2)[0], dim=[2, 3])
+        gauss_intersection = torch.sum(torch.min(gauss_grid, dim=3)[0], dim=[3, 4])
+        gauss_union = torch.sum(torch.max(gauss_grid, dim=3)[0], dim=[3, 4])
+
+        # Batch, Detections, Detections
         gauss_iou = gauss_intersection / (gauss_union)
 
-        iou_max, _ = gauss_iou.triu(diagonal=1).max(dim=0)
+        # Batch, Detections
+        iou_max, _ = gauss_iou.triu(diagonal=1).max(dim=1)
 
         # From lowest to highest IoU
-        _, sorted_iou_idx = iou_max.sort(descending=False)
-        sorted_iou_idx = sorted_iou_idx[:top_k_iou]
+        _, sorted_iou_idx = iou_max.sort(descending=False, dim=-1)
+        sorted_iou_idx = sorted_iou_idx[:, :top_k_iou]
 
         return {
             "iou": gauss_iou,
@@ -140,19 +132,23 @@ class UnsupervisedLoss(nn.Module):
     def ae_scaled_loss(self, original, iou, keep, loc, conf):
         # __import__("pdb").set_trace()
         # AE input should be of size [batch_size, 3, img_h, img_w]
-        conf_matrix = conf.unsqueeze(0).t() @ conf.unsqueeze(0)
+        # conf shape: torch.size(batch_size,num_priors)
+
+        # conf matrix: torch.size(batch_size,num_priors,num_priors)
+        conf_matrix = conf.unsqueeze(1).permute(1, 2) @ conf.unsqueeze(1)
         # Remove Lower Triangle and Diagonal
         final_scale = iou * conf_matrix.triu(1)
 
-        # batch*num_priors
+        # Dim batch,priors
         # try:
-        ae_loss = self.autoencoder(original.unsqueeze(0), loc[keep].unsqueeze(0))
+        ae_loss = self.autoencoder(original, loc[keep])
         # except RuntimeError:
         # pdb.set_trace()
         # ae_loss but in scores
+        # batch, priors, priors
         ae_grid = torch.zeros_like(final_scale)
         try:
-            ae_grid[keep] = ae_loss.unsqueeze(1).repeat(1, ae_grid.size(1))
+            ae_grid[keep] = ae_loss.unsqueeze(2).repeat(1, 1, ae_grid.size(2))
         except RuntimeError:
             pdb.set_trace()
         ae_grid = ae_grid * final_scale
@@ -169,7 +165,7 @@ class VarianceLoss(nn.Module):
         super(VarianceLoss, self).__init__()
         pass
 
-    def forward(self, original, predictions):
+    def forward(self, original, loc, mask, conf, proto):
         global iter_counter
         original = original.float()
         # original is [batch_size, 3, img_h, img_w]
@@ -184,38 +180,18 @@ class VarianceLoss(nn.Module):
         # Assuming it has no batch
         priors_shape = list([a["conf"].size(0) for a in predictions])
 
-        # proto* shape: torch.size(mask_h,mask_w,mask_dim)
-        proto_shape = list(predictions[0]["proto"].shape)[:2]
-
-        # These are concatenated, not Pad_Sequenced on purpose.
-        loc = torch.cat([a["loc"] for a in predictions], dim=0)
+        # proto* shape: torch.size(batch,mask_h,mask_w,mask_dim)
+        # proto_shape = list(predictions[0]["proto"].shape)[:2]
+        proto_shape = list(proto.shape)[1:3]
 
         print("loc", torch.isnan(loc).any())
         # batch, num_priors, i,j, with Padded sequence
-        unnormalGaussian = pad_sequence(
-            # Split results by shapes of the priors
-            torch.split(
-                # Unsqueeze to add fake batch [0] to remove fake batch
-                gaussian.unnormalGaussian(maskShape=proto_shape, loc=loc.unsqueeze(0))[
-                    0
-                ],
-                priors_shape,
-            ),
-            batch_first=True,
-        )
+        unnormalGaussian = gaussian.unnormalGaussian(maskShape=proto_shape, loc=loc)
         writer.add_image(
             "unnormalGaussian", unnormalGaussian[0, 0], iter_counter, dataformats="HW"
         )
         print("unnormalGaussian", torch.isnan(unnormalGaussian).any())
         print("unnormalGaussian positive", (unnormalGaussian >= 0).all())
-
-        # masks: [batch, num_priors, mask_dim] with Padded Sequence
-        masks = pad_sequence([a["mask"] for a in predictions], batch_first=True)
-        print("masks", torch.isnan(masks).any())
-
-        # proto* shape: torch.size(batch_size,mask_h,mask_w,mask_dim)
-        proto = torch.stack([a["proto"] for a in predictions])
-        print("proto", torch.isnan(proto).any())
 
         # Dim: Batch, Anchors, i, j
         assembledMask = gaussian.lincomb(proto=proto, masks=masks)
@@ -234,18 +210,6 @@ class VarianceLoss(nn.Module):
         writer.add_image("attention", attention[0, 0], iter_counter, dataformats="HW")
 
         # conf shape: torch.size(batch_size,num_priors) #no num_classes
-        # conf = torch.cat([a["conf"] for a in predictions], dim=0)
-        # conf = torch.cat([a["conf"] for a in predictions], dim=0)
-        conf = pad_sequence([a["conf"] for a in predictions], batch_first=True)
-        print("conf", torch.isnan(conf).any())
-        print("confidence positive", (conf >= 0).all())
-        # num_priors, 1
-        # conf = conf[:, 1]  # Confidence in foreground. Dim Batch, Priors
-
-        # if conf.shape[-1] != 2:
-        # raise MyException("Wrong number of classes")
-
-        # No need for masking, since pad_sequence already inputs zeros
         # Batch, Anchors, i,j
         maskConfidence = torch.einsum("abcd,ab->abcd", attention, conf)
         print("maskConfidence", torch.isnan(maskConfidence).any())
@@ -297,7 +261,7 @@ class VarianceLoss(nn.Module):
         # resizedConf = resizedConf.half()
 
         # unsup: AGGREGATING RESULTS BETWEEN BATCHES HERE
-        # Dim, h, w
+        # Dim: h, w
         totalConf = torch.sum(resizedConf, dim=0)
         writer.add_image("totalConf", totalConf, iter_counter, dataformats="HW")
         print("totalConf", torch.isnan(totalConf).any())
