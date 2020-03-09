@@ -20,12 +20,6 @@ class UnsupervisedLoss(nn.Module):
         super(UnsupervisedLoss, self).__init__()
         self.variance = VarianceLoss()
         self.autoencoder = AutoEncoder()
-        self.iou_layer = torch.nn.Sequential(
-            torch.nn.Linear(12, cfg.iou_middle_features),
-            torch.nn.ReLU(),
-            torch.nn.Linear(cfg.iou_middle_features, 1),
-            torch.nn.Sigmoid(),
-        )
         self.num_classes = cfg.num_classes  # Background included
         self.background_label = 0
         self.top_k = cfg.nms_top_k
@@ -49,7 +43,7 @@ class UnsupervisedLoss(nn.Module):
         # proto* shape: torch.size(batch_size,mask_h,mask_w,mask_dim)
         proto_data = predictions["proto"]
 
-        losses = {"iou_loss": 0, "ae_loss": 0}
+        losses = {"ae_loss": 0}
         out = []
 
         with timer.env("Detect"):
@@ -61,7 +55,6 @@ class UnsupervisedLoss(nn.Module):
                     conf_data[batch_idx], loc_data[batch_idx], mask_data[batch_idx]
                 )
                 keep = all_results["keep"]
-                losses["iou_loss"] += all_results["iou_loss"] * 100
                 # AE Scaled loss needs non-kept Detections
                 losses["ae_loss"] += (
                     self.ae_scaled_loss(
@@ -90,6 +83,7 @@ class UnsupervisedLoss(nn.Module):
         return losses
 
     def detect(self, conf, loc, mask):
+        # IoU Threshold, Conf_Threshold, IoU_Thresh
         """
         NO BATCH
         boxes=loc Shape: [num_priors, 4]
@@ -97,138 +91,51 @@ class UnsupervisedLoss(nn.Module):
         """
         # unsup: Background isn't NMSed
         """ Perform nms for only the max scoring class that isn't background (class 0) """
-        # conf shape: torch.size(num_priors)
-        # filter below confidence
-        keep = conf > self.conf_thresh
+        top_k_conf = cfg.nms_top_k_conf
+        top_k_iou = cfg.nms_top_k_iou
 
-        # filtered num_priors
-        filtered_conf = conf[keep]
-        # decoded boxes with size [num_priors, 4], or 5 for unsup
-        filtered_loc = loc[keep, :]
-        # shape torch.size(num_priors,mask_dim)
-        filtered_masks = mask[keep, :]
+        sorted_conf, idx = conf.sort(descending=True)
+        idx = idx[:top_k_conf].contiguous()
+        sorted_conf = sorted_conf[:top_k_conf]
+        # loc with size [num_priors, 4], or 5 for unsup
+        sorted_loc = loc[idx, :]
+        # masks shape: Shape: [num_priors, mask_dim]
+        sorted_mask = mask[idx, :]
 
-        # if filtered_conf.size(0) == 0:
-        # return None
+        # Dim: Detections, i,j
+        gauss = gaussian.unnormalGaussian(
+            maskShape=cfg.iou_gauss_dim, loc=sorted_loc.unsqueeze(0),
+        )[0]
 
-        iou_grid, keep, loc, mask, conf, iou_loss = self.unsup_nms(
-            filtered_conf,
-            filtered_loc,
-            filtered_masks,
-            self.nms_thresh,
-            self.top_k,
-            train_iou=True,
+        gaussShape = list(gauss.shape)
+        # jaccard overlap: (tensor) Shape: [box_a.size(0), box_b.size(0)]
+        gauss_rows = gauss.view(1, gaussShape[0], *gaussShape[1:]).repeat(
+            gaussShape[0], 1, 1, 1
         )
+        gauss_cols = gauss.view(gaussShape[0], 1, *gaussShape[1:]).repeat(
+            1, gaussShape[0], 1, 1
+        )
+        # Detections, Detections, 2, I,J
+        gauss_grid = torch.stack([gauss_rows, gauss_cols], dim=2)
+
+        # [0] is to remove index
+        gauss_intersection = torch.sum(torch.min(gauss_grid, dim=2)[0], dim=[2, 3])
+        gauss_union = torch.sum(torch.max(gauss_grid, dim=2)[0], dim=[2, 3])
+        gauss_iou = gauss_intersection / (gauss_union)
+
+        iou_max, _ = gauss_iou.triu(diagonal=1).max(dim=0)
+
+        # From lowest to highest IoU
+        _, sorted_iou_idx = iou_max.sort(descending=False)
+        sorted_iou_idx = sorted_iou_idx[:top_k_iou]
 
         return {
-            "iou": iou_grid,
-            "loc": loc,
-            "mask": mask,
-            "conf": conf,
-            "keep": keep,
-            "iou_loss": iou_loss,
+            "iou": gauss_iou,
+            "loc": sorted_loc,
+            "mask": sorted_mask,
+            "conf": sorted_conf,
+            "keep": sorted_iou_idx,
         }
-
-    def unsup_nms(
-        self,
-        conf,
-        loc,
-        mask,
-        iou_threshold: float = 0.5,
-        top_k: int = 200,
-        second_threshold: bool = False,
-        train_iou=False,
-    ):
-        global iter_counter
-        # Performs sorting by confidence, returns conf,loc,mask of these sorted calculating IoU grid, index of passing NMS is returned
-
-        # cur_scores shape: torch.size(num_priors)
-        # sort by confidence
-        conf, idx = conf.sort(descending=True)
-
-        # get top_k scores
-        idx = idx[:top_k].contiguous()
-        conf = conf[:top_k]
-        # loc with size [num_priors, 4], or 5 for unsup
-        loc = loc[idx, :]
-        # masks shape: Shape: [num_priors, mask_dim]
-        mask = mask[idx, :]
-
-        # jaccard overlap: (tensor) Shape: [box_a.size(0), box_b.size(0)]
-        dup_rows = loc.view(1, loc.size(0), loc.size(1)).repeat(loc.size(0), 1, 1)
-        dup_cols = loc.view(loc.size(0), 1, loc.size(1)).repeat(1, loc.size(0), 1)
-        # num_dets, num_dets, 10
-        grid = torch.cat((dup_rows, dup_cols), dim=-1)
-
-        # self.iou_layer.requires_grad = False
-
-        # num_dets,num_dets
-        iou_grid = self.iou_layer(grid)[:, :, 0]
-
-        iou_max, _ = iou_grid.triu(diagonal=1).max(dim=0)
-
-        # Now just filter out the ones higher than the threshold
-        # Tensor of shape, num_dets
-        keep = iou_max <= iou_threshold
-        print("num detect", torch.sum(keep))
-        counter = 0
-        for i, v in enumerate(keep.tolist()):
-            if v:
-                counter = counter + 1
-            if counter > cfg.max_num_detections:
-                keep[i:] = False
-                break
-
-        # boxes = boxes[keep]
-        # masks = masks[keep]
-        # scores = scores[keep]
-
-        iou_loss = 0
-        if train_iou:
-            # __import__("pdb").set_trace()
-            # self.iou_layer.requires_grad = True
-            # Dim: Detections, i,j
-            gauss = gaussian.unnormalGaussian(
-                maskShape=cfg.iou_layer_train_dim,
-                loc=loc[keep, :][: cfg.gauss_iou_samples].unsqueeze(0).detach(),
-            )[0]
-
-            gaussShape = list(gauss.shape)
-            # jaccard overlap: (tensor) Shape: [box_a.size(0), box_b.size(0)]
-            gauss_rows = gauss.view(1, gaussShape[0], *gaussShape[1:]).repeat(
-                gaussShape[0], 1, 1, 1
-            )
-            gauss_cols = gauss.view(gaussShape[0], 1, *gaussShape[1:]).repeat(
-                1, gaussShape[0], 1, 1
-            )
-            # Detections, Detections, 2, I,J
-            gauss_grid = torch.stack([gauss_rows, gauss_cols], dim=2)
-
-            # [0] is to remove index
-            gauss_intersection = torch.sum(torch.min(gauss_grid, dim=2)[0], dim=[2, 3])
-            gauss_union = torch.sum(torch.max(gauss_grid, dim=2)[0], dim=[2, 3])
-            gauss_iou = gauss_intersection / (gauss_union)
-
-            # if error here, may be because of unsqueeze                       [0]
-            iou_loss = F.mse_loss(
-                iou_grid[keep][:, keep][: cfg.gauss_iou_samples][
-                    :, : cfg.gauss_iou_samples
-                ].detach(),
-                gauss_iou,
-                reduction="sum",
-            )
-            # self.iou_layer.requires_grad = False
-
-        # Omit this because of iou_grid
-        # Only keep the top cfg.max_num_detections highest scores across all classes
-        # scores, idx = scores.sort(0, descending=True)
-        # idx = idx[: cfg.max_num_detections]
-        # scores = scores[: cfg.max_num_detections]
-
-        # boxes = boxes[idx]
-        # masks = masks[idx]
-
-        return iou_grid, keep, loc, mask, conf, iou_loss
 
     def ae_scaled_loss(self, original, iou, keep, loc, conf):
         # __import__("pdb").set_trace()

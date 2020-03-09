@@ -229,7 +229,7 @@ if args.batch_size // torch.cuda.device_count() < 6:
     cfg.freeze_bn = True
 
 if cfg.gaussian:
-    loss_types = ["iou_loss", "ae_loss", "variance_loss"]
+    loss_types = ["ae_loss", "variance_loss"]
 else:
     loss_types = ["B", "C", "M", "P", "D", "E", "S", "I"]
 
