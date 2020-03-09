@@ -26,6 +26,14 @@ import pdb
 import sys
 from gpu_profile import gpu_profile
 
+from torch.utils.tensorboard import SummaryWriter
+
+writer = SummaryWriter()
+
+# import wandb
+
+# wandb.init(project="unsupervised")
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["GPU_DEBUG"] = "0"
 
@@ -385,7 +393,9 @@ def train():
     if not cfg.freeze_bn:
         yolact_net.freeze_bn()  # Freeze bn so we don't kill our means
     if cfg.gaussian:
-        yolact_net(torch.zeros(1, 3, cfg.max_size, cfg.max_size).cuda())
+        # NOTE: REMOVE ZEROS
+        # yolact_net(torch.zeros(1, 3, cfg.max_size, cfg.max_size).cuda())
+        pass
     else:
         yolact_net(torch.zeros(1, 3, cfg.max_size, cfg.max_size).cuda())
     if not cfg.freeze_bn:
@@ -444,6 +454,11 @@ def train():
                 continue
 
             for datum in data_loader:
+                if iteration % 100 == 0:
+                    writer.add_image("datum/0", datum[0], iteration)
+                    writer.add_image("datum/1", datum[1], iteration)
+                    writer.add_image("datum/2", datum[2], iteration)
+                    writer.add_image("datum/3", datum[3], iteration)
                 # import cv2
                 # __import__("pdb").set_trace()
                 # pdb.set_trace()

@@ -120,8 +120,8 @@ class AutoEncoder(nn.Module):
         loss = F.mse_loss(sampled, result, reduction="none")
 
         # Dim Batch*Prior
-        loss = torch.mean(loss, dim=(1, 2, 3))
-        # loss = loss.sum(loss)
+        # loss = torch.mean(loss, dim=(1, 2, 3))
+        loss = loss.sum(dim=(1, 2, 3))
 
         # Conf: batch,prior (only 1 class)
         # Confidence in foreground

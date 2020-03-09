@@ -47,7 +47,7 @@ def lincomb(predictions=None, proto=None, masks=None):
 def gauss_loc(loc):
     # loc shape: torch.size(batch_size,num_priors,6)
     locShape = list(loc.shape)
-    loc = F.tanh(loc)
+    loc = torch.tanh(loc)
     mean = loc[:, :, :2]
     cov = loc[:, :, 2:].view(*locShape[:2], 2, 2)
     cov = (cov.permute(0, 1, 3, 2)) @ cov

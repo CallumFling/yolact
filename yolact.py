@@ -772,6 +772,9 @@ class Yolact(nn.Module):
 
                 proto_out = self.proto_net(proto_x)
                 proto_out = cfg.mask_proto_prototype_activation(proto_out)
+                print("proto nan", torch.isnan(proto_out).any())
+                if torch.isnan(proto_out).any():
+                    __import__("pdb").set_trace()
 
                 if cfg.mask_proto_prototypes_as_features:
                     # Clone here because we don't want to permute this, though idk if contiguous makes this unnecessary

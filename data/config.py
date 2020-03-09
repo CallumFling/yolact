@@ -1036,7 +1036,6 @@ yolact_plus_resnet50_config = yolact_plus_base_config.copy(
 unsupervised_config = yolact_plus_resnet50_config.copy(
     {
         "num_classes": 1 + 1,
-        "max_num_detections": 15,
         # How the loss of a single detection changes loss of others
         # "max_num_autoencoder_spill": 15,
         "nms_top_k": 100,
@@ -1047,10 +1046,14 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "use_maskiou": False,
         "iou_middle_features": 15,
         "iou_layer_samples": 10,
-        "iou_layer_train_dim": [20, 20],
-        "gauss_iou_samples": 20,
+        "iou_layer_train_dim": [100, 100],
+        "max_num_detections": 30,
+        "gauss_iou_samples": 40,
         "max_size": 300,
         "use_semantic_segmentation_loss": False,
+        # "mask_proto_prototype_activation": activation_func.relu,
+        "mask_proto_prototype_activation": torch.tanh,
+        "mask_proto_coeff_activation": torch.tanh,
         # "preserve_aspect_ratio": True,
     }
 )
