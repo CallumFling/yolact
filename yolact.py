@@ -772,7 +772,6 @@ class Yolact(nn.Module):
 
                 proto_out = self.proto_net(proto_x)
                 proto_out = cfg.mask_proto_prototype_activation(proto_out)
-                print("proto nan", torch.isnan(proto_out).any())
                 if torch.isnan(proto_out).any():
                     __import__("pdb").set_trace()
 
@@ -847,7 +846,8 @@ class Yolact(nn.Module):
                 pred_outs["segm"] = self.semantic_seg_conv(outs[0])
 
             if cfg.gaussian:
-                pred_outs["losses"] = self.unsup_layer(x, pred_outs)
+                # pred_outs["losses"] = self.unsup_layer(x, pred_outs)
+                pred_outs = self.unsup_layer(x, pred_outs)
 
             return pred_outs
         else:

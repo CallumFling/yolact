@@ -49,7 +49,6 @@ class UnsupervisedLoss(nn.Module):
 
         losses = {}
         with timer.env("Detect"):
-            # decoded boxes with size [num_priors, 4]
             all_results = self.detect(conf_data, loc_data, mask_data)
             keep = all_results["keep"]
             # AE Scaled loss needs non-kept Detections
@@ -73,9 +72,10 @@ class UnsupervisedLoss(nn.Module):
             losses["variance_loss"] = self.variance(
                 original, out["loc"], out["mask"], out["conf"], out["proto"]
             )
-        print(losses)
+            out["losses"] = losses
+
         iter_counter += 1
-        return losses
+        return out
 
     def detect(self, conf, loc, mask):
         # IoU Threshold, Conf_Threshold, IoU_Thresh
@@ -172,13 +172,8 @@ class VarianceLoss(nn.Module):
 
     def forward(self, original, loc, mask, conf, proto):
         global iter_counter
-        original = original.float()
         # original is [batch_size, 3, img_h, img_w]
-
-        # This is correct, because of the tranpose above
-        # conf shape: torch.size(batch_size,num_priors,num_classes)
-        # predictions is array of Dicts from detect
-        # boxes=loc Shape: [num_priors, 5]
+        original = original.float()
 
         resizeShape = list(original.shape)[-2:]
 
@@ -186,41 +181,25 @@ class VarianceLoss(nn.Module):
         # proto_shape = list(predictions[0]["proto"].shape)[:2]
         proto_shape = list(proto.shape)[1:3]
 
-        print("loc", torch.isnan(loc).any())
-        # batch, num_priors, i,j, with Padded sequence
         unnormalGaussian = gaussian.unnormalGaussian(maskShape=proto_shape, loc=loc)
         writer.add_image(
             "unnormalGaussian", unnormalGaussian[0, 0], iter_counter, dataformats="HW"
         )
-        print("unnormalGaussian", torch.isnan(unnormalGaussian).any())
-        print("unnormalGaussian positive", (unnormalGaussian >= 0).all())
 
         # Dim: Batch, Anchors, i, j
         assembledMask = gaussian.lincomb(proto=proto, masks=mask)
         writer.add_image("lincomb", assembledMask[0, 0], iter_counter, dataformats="HW")
         assembledMask = torch.sigmoid(assembledMask)
 
-        print("assembledMask", torch.isnan(assembledMask).any())
-        if torch.isnan(assembledMask).any():
-            __import__("pdb").set_trace()
-        print("assembledMask positive", (assembledMask >= 0).all())
-
-        # Dim: Batch, Anchors, i, j
         attention = assembledMask * unnormalGaussian
-        print("attention", torch.isnan(attention).any())
-        print("attention positive", (attention >= 0).all())
         writer.add_image("attention", attention[0, 0], iter_counter, dataformats="HW")
 
-        # conf shape: torch.size(batch_size,num_priors) #no num_classes
+        # conf shape: torch.size(batch_size,num_priors)
         # Batch, Anchors, i,j
         maskConfidence = torch.einsum("abcd,ab->abcd", attention, conf)
-        print("maskConfidence", torch.isnan(maskConfidence).any())
-        print("mask confidence positive", (maskConfidence >= 0).all())
-        print("mask confidence under one", (maskConfidence <= 1).all())
         writer.add_image(
             "maskConfidence", maskConfidence[0, 0], iter_counter, dataformats="HW"
         )
-        # logConf = torch.log(maskConfidence)
 
         # unsup: REMOVE CHANNEL DIMENSION HERE, since Pad_sequence is summed, it does nothing
         # Confidence in background, see desmos
@@ -235,29 +214,18 @@ class VarianceLoss(nn.Module):
             ),
             dim=1,
         )
+
         finalConf = torch.where(
             torch.isnan(finalConf), torch.zeros_like(finalConf), finalConf
         )
         writer.add_image("finalConf", finalConf[0], iter_counter, dataformats="HW")
-        # Might be undefined because some batches don't have maximum number of detections
-        print("finalConf", torch.isnan(finalConf).any())
-        if torch.isnan(finalConf).any():
-            __import__("pdb").set_trace()
-        print("finalconf positive", (finalConf >= 0).all())
-        # if not (finalConf >= 0).all():
-        # pdb.set_trace()
 
-        # finalConf = 1 - torch.sum(F.softmax(logConf, dim=1) * maskConfidence, dim=1)
-
-        # Resize to Original Image Size, add fake depth
         # unsup: Interpolation may be incorrect
         # Dim batch, img_h, img_w
         resizedConf = F.interpolate(
             finalConf.unsqueeze(1), resizeShape, mode="bilinear", align_corners=False
         )[:, 0]
         writer.add_image("resizedConf", resizedConf[0], iter_counter, dataformats="HW")
-        print("resizedConf", torch.isnan(resizedConf).any())
-        print("resizedConf positive", (resizedConf >= 0).all())
         # if cfg.use_amp:
         # finalConf = finalConf.half()
         # resizedConf = resizedConf.half()
@@ -266,58 +234,32 @@ class VarianceLoss(nn.Module):
         # Dim: h, w
         totalConf = torch.sum(resizedConf, dim=0)
         writer.add_image("totalConf", totalConf, iter_counter, dataformats="HW")
-        print("totalConf", torch.isnan(totalConf).any())
-        print("totalconf all positive", (totalConf >= 0).all())
-        print("TOTAL_CONF {}".format(totalConf))
 
         # Dim 3, img_h, img_w
-        print("original", torch.isnan(original).any())
-        print("original all positive", (original >= 0).all())
         weightedMean = torch.einsum("abcd,acd->bcd", original, resizedConf)
         writer.add_image("weightedMean", weightedMean, iter_counter)
-        print("weightedMean", torch.isnan(weightedMean).any())
 
         # Dim: batch, 3, img_h, img_w
         squaredDiff = (original - weightedMean) ** 2
-        print("squaredDiff", torch.isnan(squaredDiff).any())
         # if cfg.use_amp:
         # squaredDiff = squaredDiff.half()
 
         # Batch,3,img_h, image w
         weightedDiff = torch.einsum("abcd,acd->abcd", squaredDiff, resizedConf)
         writer.add_image("weightedDiff", weightedDiff[0], iter_counter)
-        print("weightedDiff", torch.isnan(weightedDiff).any())
-        # print("TOTAL CONF {}".format(totalConf + cfg.positive))
-        # print("CFG POSITIVE {}".format(cfg.positive))
-        # weightedDiff = torch.where(torch.isnan(weightedDiff), torch.zeros_like(totalConf), weightedDiff)
-        # totalConf = torch.where(torch.isnan(totalConf), torch.ones_like(totalConf), totalConf)
-        # sTotalConf = torch.tensor(totalConf.shape).fill_(cfg.positive) if torch.isnan(totalConf).any() else (totalConf + cfg.positive)
+
         weightedVariance = weightedDiff / (totalConf + cfg.positive)
         writer.add_image("weightedVariance", weightedVariance[0], iter_counter)
-        print("weightedVariance", torch.isnan(weightedVariance).any())
 
-        # result = torch.mean(weightedVariance, dim=(2, 3))
-        # result = torch.sum(result)
         # NOTE: Arbitrary Loss Scaling
         result = (
             torch.sum(weightedVariance)
             / (proto.shape[1] * proto.shape[2])
             * original.shape[0]
         )
-        print("resulttype", result.type())
-        print("result", torch.isnan(result).any())
 
         # if cfg.use_amp:
         # return result.half()
 
         # Normalize by number of elements in original image
         return result
-
-    # was normalized by /original.numel()
-
-
-# class ScaledAutoencoderLoss(nn.Module):
-# def __init__(self, img_h, img_w):
-# super(ScaledAutoencoderLoss, self).__init__()
-# pass
-

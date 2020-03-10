@@ -45,6 +45,7 @@ class AutoEncoder(nn.Module):
             Interpolate(mode="bilinear", scale_factor=2),
             nn.ConvTranspose2d(32, 3, kernel_size=3),
             # nn.ReLU(True),
+            # NOTE: Removed Sigmoid Activation on the end of Autoencoder Decoder
             nn.Sigmoid(),
         )
 
@@ -68,21 +69,8 @@ class AutoEncoder(nn.Module):
         # unsup: changed view to reshape
         original = original.reshape(-1, *originalShape[1:])
 
-        # grid= grid.reshape(-1, *originalShape[1:])
-
         # batch*priors, img_h,img_w,2
         grid = grid.reshape(-1, *gridShape[2:])
-
-        print(
-            "IS NAN, original {} grid {}".format(
-                torch.isnan(original).any(), torch.isnan(grid).any()
-            )
-        )
-        print(
-            "IS INF, original {} grid {}".format(
-                torch.isinf(original).any(), torch.isinf(grid).any()
-            )
-        )
 
         # @rayandrew
         # so my analysis here
@@ -95,23 +83,10 @@ class AutoEncoder(nn.Module):
             original, grid, align_corners=False, padding_mode="border", mode="bilinear"
         )  # this seem the fixes
 
-        print("Sampled NAN", torch.isnan(sampled).any())
-
-        # sampled[torch.isinf(sampled)] = 0
-        # safe_sampled = torch.where(torch.isfinite(sampled), torch.zeros_like(sampled), sampled)
-
-        # try:
-        print(
-            "Original {} Grid {} Sampled shape {}".format(
-                original.shape, grid.shape, sampled.shape
-            )
-        )
-        # print("SAMPLED {}".format(sampled))
         result = self.encoder(sampled)
-        # except RuntimeError:
-        # pdb.set_trace()
         result = self.decoder(result)
-        # NOTE: Using Nearest, not Bilinear
+
+        # NOTE: Using Bilinear
         result = F.interpolate(
             result, size=cfg.sampling_grid, mode="bilinear", align_corners=False
         )
@@ -125,13 +100,6 @@ class AutoEncoder(nn.Module):
 
         # Dim Batch,Priors
         loss = loss.view(*gridShape[:2])
-
-        # Conf: batch,prior (only 1 class)
-        # Confidence in foreground
-        # conf = predictions["conf"][:, :, 1]
-
-        # Batch*prior
-        # conf = conf.view(-1)
 
         # Scale loss by confidence, and by the number of Batches and Priors
         if cfg.use_amp:
@@ -154,11 +122,6 @@ def samplingGrid(loc):
     # cov = cov.view(-1, 2, 2)
     cholesky = cholesky.view(-1, 2, 2)
 
-    # Batch*Priors, 2,2
-    # if cfg.use_amp:
-    # cholesky = torch.cholesky(cov.float()).half()
-    # else:
-
     # Batch*Priors, 2
     mean = mean.view(-1, 2)
 
@@ -174,12 +137,8 @@ def samplingGrid(loc):
     # becomes tensor of [(0,0),(1,0),(2,0)...]
     coordinate_list = torch.stack((i.view(-1), j.view(-1)), dim=1)
 
-    # Dim: batch*priors, coordinate (i,j)
-    # transformed_coords = torch.einsum("abc,ac->ab", cholesky, coordinate_list) + mean
-
     # Coordinates, Batch*Priors, 2
     # dab to be able to add the mean
-
     # Batch, 2,2 vs mesh, 2 -> Mesh, Batch, 2
     transformed_coords = torch.einsum("abc,dc->dab", cholesky, coordinate_list) + mean
 
