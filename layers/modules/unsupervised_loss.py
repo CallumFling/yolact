@@ -14,6 +14,10 @@ from torch.utils.tensorboard import SummaryWriter
 writer = SummaryWriter()
 iter_counter = 0
 
+# https://stackoverflow.com/questions/55628014/indexing-a-3d-tensor-using-a-2d-tensor
+def twoIndexThree(tensor, index):
+    return tensor[torch.arange(tensor.shape[0]).unsqueeze(-1), index]
+
 
 class UnsupervisedLoss(nn.Module):
     def __init__(self):
@@ -31,7 +35,6 @@ class UnsupervisedLoss(nn.Module):
 
     def forward(self, original, predictions):
         global iter_counter
-        losses = {}
         # loc shape: torch.size(batch_size,num_priors,6)
         loc_data = predictions["loc"]
         # conf shape: torch.size(batch_size,num_priors,num_classes)
@@ -44,13 +47,15 @@ class UnsupervisedLoss(nn.Module):
         # proto* shape: torch.size(batch_size,mask_h,mask_w,mask_dim)
         proto_data = predictions["proto"]
 
+        losses = {}
         with timer.env("Detect"):
             # decoded boxes with size [num_priors, 4]
             all_results = self.detect(conf_data, loc_data, mask_data)
             keep = all_results["keep"]
             # AE Scaled loss needs non-kept Detections
+            # NOTE: Loss scaling to remove Backward errors
             losses["ae_loss"] = self.ae_scaled_loss(
-                original[batch_idx],
+                original,
                 all_results["iou"],
                 all_results["keep"],
                 all_results["loc"],
@@ -58,15 +63,16 @@ class UnsupervisedLoss(nn.Module):
             )
 
             # IoU not included because not needed by variance
-            filtered_result = {
-                "loc": all_results["loc"][keep],
-                "mask": all_results["mask"][keep],
-                "conf": all_results["conf"][keep],
-                "proto": proto_data[batch_idx],
+            out = {
+                "loc": twoIndexThree(all_results["loc"], keep),
+                "mask": twoIndexThree(all_results["mask"], keep),
+                "conf": torch.gather(all_results["conf"], 1, keep),
+                "proto": proto_data,
             }
-            out.append(filtered_result)
 
-        losses["variance_loss"] = self.variance(original, out) / 100
+            losses["variance_loss"] = self.variance(
+                original, out["loc"], out["mask"], out["conf"], out["proto"]
+            )
         print(losses)
         iter_counter += 1
         return losses
@@ -85,13 +91,13 @@ class UnsupervisedLoss(nn.Module):
 
         # __import__("pdb").set_trace()
         # conf shape: torch.size(batch_size,num_priors)
-        # NOTE: Potential sorting inefficiency
-        sorted_conf, idx = conf.sort(dim=-1, descending=True)
-        sorted_conf = sorted_conf[:, :top_k_conf]
+        sorted_conf, sorted_conf_idx = torch.topk(
+            conf, top_k_conf, dim=-1, largest=True
+        )
         # loc with size [batch,num_priors, 4], or 5 for unsup
-        sorted_loc = loc[idx][:, :top_k_conf]
+        sorted_loc = twoIndexThree(loc, sorted_conf_idx)
         # masks shape: Shape: [num_priors, mask_dim]
-        sorted_mask = mask[idx][:, :top_k_conf]
+        sorted_mask = twoIndexThree(mask, sorted_conf_idx)
 
         # Dim: Batch, Detections, i,j
         gauss = gaussian.unnormalGaussian(maskShape=cfg.iou_gauss_dim, loc=sorted_loc)
@@ -118,8 +124,7 @@ class UnsupervisedLoss(nn.Module):
         iou_max, _ = gauss_iou.triu(diagonal=1).max(dim=1)
 
         # From lowest to highest IoU
-        _, sorted_iou_idx = iou_max.sort(descending=False, dim=-1)
-        sorted_iou_idx = sorted_iou_idx[:, :top_k_iou]
+        _, sorted_iou_idx = torch.topk(iou_max, top_k_iou, dim=-1, largest=False)
 
         return {
             "iou": gauss_iou,
@@ -130,30 +135,30 @@ class UnsupervisedLoss(nn.Module):
         }
 
     def ae_scaled_loss(self, original, iou, keep, loc, conf):
-        # __import__("pdb").set_trace()
         # AE input should be of size [batch_size, 3, img_h, img_w]
         # conf shape: torch.size(batch_size,num_priors)
 
         # conf matrix: torch.size(batch_size,num_priors,num_priors)
-        conf_matrix = conf.unsqueeze(1).permute(1, 2) @ conf.unsqueeze(1)
+        conf_matrix = conf.unsqueeze(1).permute(0, 2, 1) @ conf.unsqueeze(1)
         # Remove Lower Triangle and Diagonal
         final_scale = iou * conf_matrix.triu(1)
 
         # Dim batch,priors
         # try:
-        ae_loss = self.autoencoder(original, loc[keep])
+        ae_loss = self.autoencoder(original, twoIndexThree(loc, keep))
         # except RuntimeError:
         # pdb.set_trace()
         # ae_loss but in scores
         # batch, priors, priors
+        # pdb.set_trace()
         ae_grid = torch.zeros_like(final_scale)
-        try:
-            ae_grid[keep] = ae_loss.unsqueeze(2).repeat(1, 1, ae_grid.size(2))
-        except RuntimeError:
-            pdb.set_trace()
+        ae_grid[torch.arange(ae_grid.shape[0]).unsqueeze(-1), keep] = ae_loss.unsqueeze(
+            2
+        ).repeat(1, 1, ae_grid.size(2))
         ae_grid = ae_grid * final_scale
 
-        return torch.sum(ae_grid)
+        # Divide by Priors
+        return torch.mean(ae_grid)
 
 
 class MyException(Exception):
@@ -177,9 +182,6 @@ class VarianceLoss(nn.Module):
 
         resizeShape = list(original.shape)[-2:]
 
-        # Assuming it has no batch
-        priors_shape = list([a["conf"].size(0) for a in predictions])
-
         # proto* shape: torch.size(batch,mask_h,mask_w,mask_dim)
         # proto_shape = list(predictions[0]["proto"].shape)[:2]
         proto_shape = list(proto.shape)[1:3]
@@ -194,7 +196,7 @@ class VarianceLoss(nn.Module):
         print("unnormalGaussian positive", (unnormalGaussian >= 0).all())
 
         # Dim: Batch, Anchors, i, j
-        assembledMask = gaussian.lincomb(proto=proto, masks=masks)
+        assembledMask = gaussian.lincomb(proto=proto, masks=mask)
         writer.add_image("lincomb", assembledMask[0, 0], iter_counter, dataformats="HW")
         assembledMask = torch.sigmoid(assembledMask)
 
@@ -296,7 +298,12 @@ class VarianceLoss(nn.Module):
 
         # result = torch.mean(weightedVariance, dim=(2, 3))
         # result = torch.sum(result)
-        result = torch.sum(weightedVariance)
+        # NOTE: Arbitrary Loss Scaling
+        result = (
+            torch.sum(weightedVariance)
+            / (proto.shape[1] * proto.shape[2])
+            * original.shape[0]
+        )
         print("resulttype", result.type())
         print("result", torch.isnan(result).any())
 

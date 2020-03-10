@@ -124,7 +124,7 @@ class AutoEncoder(nn.Module):
         loss = loss.sum(dim=(1, 2, 3))
 
         # Dim Batch,Priors
-        loss = loss.view(*gridShape)
+        loss = loss.view(*gridShape[:2])
 
         # Conf: batch,prior (only 1 class)
         # Confidence in foreground

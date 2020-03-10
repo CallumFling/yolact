@@ -59,7 +59,11 @@ def gauss_loc(loc):
         torch.abs(cov),
         cov,
     )
-    cholesky = torch.cholesky(cov.float())
+    try:
+        cholesky = torch.cholesky(cov.float())
+    except RuntimeError:
+        print("Singular CUDA")
+        cholesky = torch.cholesky(cov.float() + torch.eye(2))
     # except:
     # print("Excepted:")
     # cholesky = torch.zeros_like(cov)
