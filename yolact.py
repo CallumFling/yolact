@@ -128,7 +128,7 @@ class PredictionModule(nn.Module):
 
             if cfg.gaussian:
                 self.gauss_layer = nn.Conv2d(
-                    out_channels, self.num_priors * 6, **cfg.head_layer_params
+                    out_channels, self.num_priors * 5, **cfg.head_layer_params
                 )
             else:
                 self.bbox_layer = nn.Conv2d(
@@ -244,7 +244,7 @@ class PredictionModule(nn.Module):
                 src.gauss_layer(gauss_x)
                 .permute(0, 2, 3, 1)
                 .contiguous()
-                .view(x.size(0), -1, 6)
+                .view(x.size(0), -1, 5)
             )
         else:
             bbox_x = src.bbox_extra(x)

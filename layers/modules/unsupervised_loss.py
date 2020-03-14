@@ -11,6 +11,10 @@ import pdb
 from torchvision.utils import make_grid
 
 from torch.utils.tensorboard import SummaryWriter
+import torchsnooper
+import snoop
+
+torchsnooper.register_snoop()
 
 
 def unsup_writer(Writer):
@@ -71,8 +75,12 @@ class UnsupervisedLoss(nn.Module):
 
             # IoU not included because not needed by variance
             out = {
-                "loc": twoIndexThree(all_results["loc"], keep),
-                "mask": twoIndexThree(all_results["mask"], keep),
+                "loc": all_results["loc"][
+                    torch.arange(all_results["loc"].shape[0]).unsqueeze(-1), keep
+                ],
+                "mask": all_results["mask"][
+                    torch.arange(all_results["mask"].shape[0]).unsqueeze(-1), keep
+                ],
                 "conf": torch.gather(all_results["conf"], 1, keep),
                 "proto": proto_data,
             }
@@ -80,6 +88,7 @@ class UnsupervisedLoss(nn.Module):
             losses["variance_loss"] = self.variance(
                 original, out["loc"], out["mask"], out["conf"], out["proto"]
             )
+            print(losses)
             out["losses"] = losses
 
         return out
@@ -102,9 +111,9 @@ class UnsupervisedLoss(nn.Module):
             conf, top_k_conf, dim=-1, largest=True
         )
         # loc with size [batch,num_priors, 4], or 5 for unsup
-        sorted_loc = twoIndexThree(loc, sorted_conf_idx)
+        sorted_loc = loc[torch.arange(loc.shape[0]).unsqueeze(-1), sorted_conf_idx]
         # masks shape: Shape: [num_priors, mask_dim]
-        sorted_mask = twoIndexThree(mask, sorted_conf_idx)
+        sorted_mask = mask[torch.arange(mask.shape[0]).unsqueeze(-1), sorted_conf_idx]
 
         # Dim: Batch, Detections, i,j
         gauss = gaussian.unnormalGaussian(maskShape=cfg.iou_gauss_dim, loc=sorted_loc)
@@ -124,8 +133,9 @@ class UnsupervisedLoss(nn.Module):
         gauss_intersection = torch.sum(torch.min(gauss_grid, dim=3)[0], dim=[3, 4])
         gauss_union = torch.sum(torch.max(gauss_grid, dim=3)[0], dim=[3, 4])
 
+        # Positive required to not make NaN
         # Batch, Detections, Detections
-        gauss_iou = gauss_intersection / (gauss_union)
+        gauss_iou = gauss_intersection / (gauss_union + cfg.positive)
 
         # Batch, Detections
         iou_max, _ = gauss_iou.triu(diagonal=1).max(dim=1)
@@ -150,9 +160,14 @@ class UnsupervisedLoss(nn.Module):
         # Remove Lower Triangle and Diagonal
         final_scale = iou * conf_matrix.triu(1)
 
+        try:
+            loc = loc[torch.arange(loc.shape[0]).unsqueeze(-1), keep]
+        except Exception as e:
+            print(e)
+            __import__("pdb").set_trace()
         # Dim batch,priors
         # try:
-        ae_loss = self.autoencoder(original, twoIndexThree(loc, keep))
+        ae_loss = self.autoencoder(original, loc)
         # except RuntimeError:
         # pdb.set_trace()
         # ae_loss but in scores
@@ -165,7 +180,7 @@ class UnsupervisedLoss(nn.Module):
         ae_grid = ae_grid * final_scale
 
         # Divide by Priors
-        return torch.mean(ae_grid)
+        return torch.sum(ae_grid)
 
 
 class MyException(Exception):

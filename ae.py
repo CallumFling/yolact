@@ -96,8 +96,8 @@ class AutoEncoder(nn.Module):
         loss = F.mse_loss(sampled, result, reduction="none")
 
         # Dim Batch*Prior
-        # loss = torch.mean(loss, dim=(1, 2, 3))
-        loss = loss.sum(dim=(1, 2, 3))
+        loss = torch.mean(loss, dim=(1, 2, 3))
+        # loss = loss.sum(dim=(1, 2, 3))
 
         # Dim Batch,Priors
         loss = loss.view(*gridShape[:2])

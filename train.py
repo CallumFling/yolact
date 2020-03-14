@@ -445,10 +445,8 @@ def train():
 
             for datum in data_loader:
                 if iteration % 100 == 0:
-                    writer.add_image("datum/0", datum[0], iteration)
-                    writer.add_image("datum/1", datum[1], iteration)
-                    writer.add_image("datum/2", datum[2], iteration)
-                    writer.add_image("datum/3", datum[3], iteration)
+                    for i in range(datum.shape[0]):
+                        writer.add_image("datum/" + str(i), datum[i], iteration)
                 # import cv2
                 # __import__("pdb").set_trace()
                 # pdb.set_trace()

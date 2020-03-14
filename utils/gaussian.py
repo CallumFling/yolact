@@ -5,6 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.multivariate_normal import _batch_mahalanobis
 from data.config import cfg, mask_type
+import torchsnooper
+import snoop
+
+torchsnooper.register_snoop()
 
 
 def lincomb(predictions=None, proto=None, masks=None):
@@ -20,50 +24,46 @@ def lincomb(predictions=None, proto=None, masks=None):
     return torch.einsum("acde,abe->abcd", proto, masks)
 
 
+def rotation_matrix(theta):
+    # Theta shape: torch.shape(batch,num_priors)
+    sin, cos = torch.sin(theta), torch.cos(theta)
+
+    # shape: torch.shape(batch,num_priors,2)
+    rot_0 = torch.stack((cos, -sin), dim=2)
+    rot_1 = torch.stack((sin, cos), dim=2)
+
+    # shape: torch.shape(batch,num_priors,2,2)
+    rot = torch.stack((rot_0, rot_1), dim=2)
+    return rot
+
+
+# @snoop
 def gauss_loc(loc):
     # Σ is equal to RSS(R-1)
     # Cholesky=T=RS
     # calculate this instead
-    # loc shape: torch.size(batch_size,num_priors,6)
+    # loc shape: torch.size(batch_size,num_priors,5)
     locShape = list(loc.shape)
 
-    # NOTE: without tanh, something becomes NaN
-    loc = torch.tanh(loc)
     mean = loc[:, :, :2]
-    cov = loc[:, :, 2:].view(*locShape[:2], 2, 2)
-    cov = (cov.permute(0, 1, 3, 2)) @ cov
-    # cov = cov + torch.eye(2) * cfg.positive
-    # NOTE: this is where the diagonal line comes from
-    cov = torch.where(
-        # Where the diagonal is negative
-        torch.diag_embed(torch.diagonal(cov, dim1=-1, dim2=-2)) < 0,
-        torch.abs(cov),
-        cov,
-    )
-    try:
-        cholesky = torch.cholesky(cov.float())
-    except RuntimeError:
-        print("Singular CUDA")
-        cholesky = torch.cholesky(cov.float() + torch.eye(2))
-    # NOTE: removed loc_scale
-    cholesky = cholesky
-    if torch.isnan(cholesky).any():
-        print("Not Symmetric Positive Semi-definite")
-        __import__("pdb").set_trace()
+    # mean = torch.tanh(mean)
+    mean = torch.fmod(mean, cfg.gauss_wrap)
 
-        # @rayandrews
-        # this is inplace operation
-        # will result error in backprop!
-        # cholesky[torch.isnan(cholesky)] = 0
+    theta = loc[:, :, 2]
+    rot = rotation_matrix(theta)
 
-        # below is the safe version
-        cholesky = torch.where(
-            torch.isnan(cholesky), torch.zeros_like(cholesky), cholesky
-        )
-
+    scale_coeff = loc[:, :, 3:5]
+    # Positive required
+    scale_coeff = (
+        (torch.sign(scale_coeff) * cfg.max_scale)
+        - torch.fmod(scale_coeff, cfg.max_scale)
+    ) ** 2 + cfg.positive
+    scale = torch.diag_embed(scale_coeff)
+    cholesky = rot @ scale
     return mean, cholesky
 
 
+# @snoop
 def mahalanobisGrid(predictions=None, maskShape=None, loc=None):
     if maskShape is None:
         maskShape = list(predictions["proto"].shape)[1:3]
