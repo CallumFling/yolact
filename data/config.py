@@ -1054,6 +1054,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "mask_proto_prototype_activation": torch.tanh,
         "mask_proto_coeff_activation": torch.tanh,
         # "preserve_aspect_ratio": True,
+        "loc_scale":1/10
     }
 )
 

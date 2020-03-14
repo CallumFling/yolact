@@ -28,21 +28,22 @@ class AutoEncoder(nn.Module):
             nn.ReLU(True),
             nn.MaxPool2d(2),
         )
+        args = {"mode": "bilinear", "scale_factor": 2, "align_corners": False}
 
         self.decoder = nn.Sequential(
-            Interpolate(mode="bilinear", scale_factor=2),
+            Interpolate(**args),
             nn.ConvTranspose2d(2, 4, kernel_size=3),
             nn.ReLU(True),
-            Interpolate(mode="bilinear", scale_factor=2),
+            Interpolate(**args),
             nn.ConvTranspose2d(4, 8, kernel_size=3),
             nn.ReLU(True),
-            Interpolate(mode="bilinear", scale_factor=2),
+            Interpolate(**args),
             nn.ConvTranspose2d(8, 16, kernel_size=3),
             nn.ReLU(True),
-            Interpolate(mode="bilinear", scale_factor=2),
+            Interpolate(**args),
             nn.ConvTranspose2d(16, 32, kernel_size=3),
             nn.ReLU(True),
-            Interpolate(mode="bilinear", scale_factor=2),
+            Interpolate(**args),
             nn.ConvTranspose2d(32, 3, kernel_size=3),
             # nn.ReLU(True),
             # NOTE: Removed Sigmoid Activation on the end of Autoencoder Decoder

@@ -4,7 +4,7 @@ from utils.functions import MovingAverage, SavePath
 from utils.logger import Log
 from utils import timer
 from layers.modules import MultiBoxLoss
-from yolact import Yolact
+from yolact import Yolact, set_writer, set_iter
 import os
 import sys
 import time
@@ -29,6 +29,7 @@ from gpu_profile import gpu_profile
 from torch.utils.tensorboard import SummaryWriter
 
 writer = SummaryWriter()
+set_writer(writer)
 
 # import wandb
 
@@ -41,19 +42,7 @@ os.environ["GPU_DEBUG"] = "0"
 # Oof
 import eval as eval_script
 
-# @rayandrew
-# turn off this line because it make training fails
-# it detecs NaN value in backpropagation tensors
-# you need to check deeper into this case
-# uncomment if you think NaN value is solved in
-# every backpropagation tensor
-torch.autograd.set_detect_anomaly(True)
-
-# so this thing can be set into True
-# if the F.grid_sample calculation is not exploded
-# check ae.py for further info
-torch.backends.cudnn.enabled = True
-# torch.backends.cudnn.enabled = False
+# torch.autograd.set_detect_anomaly(True)
 
 
 def str2bool(v):
@@ -405,6 +394,7 @@ def train():
     loc_loss = 0
     conf_loss = 0
     iteration = max(args.start_iter, 0)
+    set_iter(iteration)
     last_time = time.time()
 
     epoch_size = len(dataset) // args.batch_size
@@ -515,6 +505,9 @@ def train():
                 losses = {
                     k: (v).mean() for k, v in losses.items()
                 }  # Mean here because Dataparallel
+                for k, v in losses.items():
+                    writer.add_scalar("loss/" + k, v, iteration)
+
                 loss = sum([losses[k] for k in losses])
 
                 # no_inf_mean removes some components from the loss, so make sure to backward through all of it
@@ -591,6 +584,7 @@ def train():
                     log.log_gpu_stats = args.log_gpu
 
                 iteration += 1
+                set_iter(iteration)
 
                 if iteration % args.save_interval == 0 and iteration != args.start_iter:
                     if args.keep_latest:
@@ -611,7 +605,7 @@ def train():
             # This is done per epoch
             if args.validation_epoch > 0:
                 if epoch % args.validation_epoch == 0 and epoch > 0:
-                    if cfg.gaussian:
+                    if not cfg.gaussian:
                         compute_validation_map(
                             epoch,
                             iteration,
@@ -620,7 +614,7 @@ def train():
                             log if args.log else None,
                         )
                     else:
-                        compute_validation_loss(net, val_data_loader, epoch, iteration)
+                        compute_validation_loss(net, val_data_loader, criterion)
 
         # Compute validation mAP after training is finished
         if not cfg.gaussian:
@@ -745,8 +739,8 @@ def compute_validation_loss(net, data_loader, criterion):
         iterations = 0
         for datum in data_loader:
             if cfg.gaussian:
-                images = prepare_data(datum)
-                losses = net(images)
+                datum = datum.cuda()
+                _losses = net(datum)
             else:
                 images, targets, masks, num_crowds = prepare_data(datum)
                 out = net(images)

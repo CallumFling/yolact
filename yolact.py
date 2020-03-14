@@ -16,7 +16,16 @@ from backbone import construct_backbone
 import torch.backends.cudnn as cudnn
 from utils import timer, gaussian
 from utils.functions import MovingAverage, make_net
-from layers.modules.unsupervised_loss import UnsupervisedLoss
+from layers.modules.unsupervised_loss import UnsupervisedLoss, unsup_writer, unsup_iter
+
+
+def set_writer(writer):
+    unsup_writer(writer)
+
+
+def set_iter(iteration):
+    unsup_iter(iteration)
+
 
 # This is required for Pytorch 1.0.1 on Windows to initialize Cuda on some driver versions.
 # See the bug report here: https://github.com/pytorch/pytorch/issues/17108

@@ -21,13 +21,19 @@ def lincomb(predictions=None, proto=None, masks=None):
 
 
 def gauss_loc(loc):
+    # Σ is equal to RSS(R-1)
+    # Cholesky=T=RS
+    # calculate this instead
     # loc shape: torch.size(batch_size,num_priors,6)
     locShape = list(loc.shape)
+
+    # NOTE: without tanh, something becomes NaN
     loc = torch.tanh(loc)
     mean = loc[:, :, :2]
     cov = loc[:, :, 2:].view(*locShape[:2], 2, 2)
     cov = (cov.permute(0, 1, 3, 2)) @ cov
     # cov = cov + torch.eye(2) * cfg.positive
+    # NOTE: this is where the diagonal line comes from
     cov = torch.where(
         # Where the diagonal is negative
         torch.diag_embed(torch.diagonal(cov, dim1=-1, dim2=-2)) < 0,
@@ -39,6 +45,8 @@ def gauss_loc(loc):
     except RuntimeError:
         print("Singular CUDA")
         cholesky = torch.cholesky(cov.float() + torch.eye(2))
+    # NOTE: removed loc_scale
+    cholesky = cholesky
     if torch.isnan(cholesky).any():
         print("Not Symmetric Positive Semi-definite")
         __import__("pdb").set_trace()

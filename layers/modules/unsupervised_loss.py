@@ -8,11 +8,20 @@ from utils import gaussian, timer
 import math
 from ae import AutoEncoder
 import pdb
+from torchvision.utils import make_grid
 
 from torch.utils.tensorboard import SummaryWriter
 
-writer = SummaryWriter()
-iter_counter = 0
+
+def unsup_writer(Writer):
+    global writer
+    writer = Writer
+
+
+def unsup_iter(Iteration):
+    global iteration
+    iteration = Iteration
+
 
 # https://stackoverflow.com/questions/55628014/indexing-a-3d-tensor-using-a-2d-tensor
 def twoIndexThree(tensor, index):
@@ -34,7 +43,6 @@ class UnsupervisedLoss(nn.Module):
             raise ValueError("nms_threshold must be non negative.")
 
     def forward(self, original, predictions):
-        global iter_counter
         # loc shape: torch.size(batch_size,num_priors,6)
         loc_data = predictions["loc"]
         # conf shape: torch.size(batch_size,num_priors,num_classes)
@@ -74,7 +82,6 @@ class UnsupervisedLoss(nn.Module):
             )
             out["losses"] = losses
 
-        iter_counter += 1
         return out
 
     def detect(self, conf, loc, mask):
@@ -171,7 +178,7 @@ class VarianceLoss(nn.Module):
         pass
 
     def forward(self, original, loc, mask, conf, proto):
-        global iter_counter
+        log = iteration % 1 == 0
         # original is [batch_size, 3, img_h, img_w]
         original = original.float()
 
@@ -182,24 +189,46 @@ class VarianceLoss(nn.Module):
         proto_shape = list(proto.shape)[1:3]
 
         unnormalGaussian = gaussian.unnormalGaussian(maskShape=proto_shape, loc=loc)
-        writer.add_image(
-            "unnormalGaussian", unnormalGaussian[0, 0], iter_counter, dataformats="HW"
-        )
+
+        # Display multiple images in Batch[0]
+        if log:
+            writer.add_images(
+                "variance/0_unnormalGaussian",
+                unnormalGaussian[0].unsqueeze(-1),
+                iteration,
+                dataformats="NHWC",
+            )
 
         # Dim: Batch, Anchors, i, j
         assembledMask = gaussian.lincomb(proto=proto, masks=mask)
-        writer.add_image("lincomb", assembledMask[0, 0], iter_counter, dataformats="HW")
+        if log:
+            writer.add_images(
+                "variance/1_lincomb",
+                assembledMask[0].unsqueeze(-1),
+                iteration,
+                dataformats="NHWC",
+            )
         assembledMask = torch.sigmoid(assembledMask)
 
         attention = assembledMask * unnormalGaussian
-        writer.add_image("attention", attention[0, 0], iter_counter, dataformats="HW")
+        if log:
+            writer.add_images(
+                "variance/2_attention",
+                attention[0].unsqueeze(-1),
+                iteration,
+                dataformats="NHWC",
+            )
 
         # conf shape: torch.size(batch_size,num_priors)
         # Batch, Anchors, i,j
         maskConfidence = torch.einsum("abcd,ab->abcd", attention, conf)
-        writer.add_image(
-            "maskConfidence", maskConfidence[0, 0], iter_counter, dataformats="HW"
-        )
+        if log:
+            writer.add_images(
+                "variance/3_maskConfidence",
+                maskConfidence[0].unsqueeze(-1),
+                iteration,
+                dataformats="NHWC",
+            )
 
         # unsup: REMOVE CHANNEL DIMENSION HERE, since Pad_sequence is summed, it does nothing
         # Confidence in background, see desmos
@@ -218,14 +247,27 @@ class VarianceLoss(nn.Module):
         finalConf = torch.where(
             torch.isnan(finalConf), torch.zeros_like(finalConf), finalConf
         )
-        writer.add_image("finalConf", finalConf[0], iter_counter, dataformats="HW")
+        if log:
+            writer.add_images(
+                "variance/4_finalConf",
+                finalConf.unsqueeze(1),
+                iteration,
+                dataformats="NCHW",
+            )
 
         # unsup: Interpolation may be incorrect
         # Dim batch, img_h, img_w
         resizedConf = F.interpolate(
             finalConf.unsqueeze(1), resizeShape, mode="bilinear", align_corners=False
         )[:, 0]
-        writer.add_image("resizedConf", resizedConf[0], iter_counter, dataformats="HW")
+
+        if log:
+            writer.add_images(
+                "variance/5_resizedConf",
+                resizedConf.unsqueeze(1),
+                iteration,
+                dataformats="NCHW",
+            )
         # if cfg.use_amp:
         # finalConf = finalConf.half()
         # resizedConf = resizedConf.half()
@@ -233,11 +275,16 @@ class VarianceLoss(nn.Module):
         # unsup: AGGREGATING RESULTS BETWEEN BATCHES HERE
         # Dim: h, w
         totalConf = torch.sum(resizedConf, dim=0)
-        writer.add_image("totalConf", totalConf, iter_counter, dataformats="HW")
+        if log:
+            writer.add_image(
+                "variance/6_totalConf", totalConf, iteration, dataformats="HW"
+            )
 
+        # NOTE MAYBE WEIGHTEd MEAN NOT NORMALIZed OOPH RITE
         # Dim 3, img_h, img_w
-        weightedMean = torch.einsum("abcd,acd->bcd", original, resizedConf)
-        writer.add_image("weightedMean", weightedMean, iter_counter)
+        weightedMean = torch.einsum("abcd,acd->bcd", original, resizedConf) / totalConf
+        if log:
+            writer.add_image("variance/7_weightedMean", weightedMean, iteration)
 
         # Dim: batch, 3, img_h, img_w
         squaredDiff = (original - weightedMean) ** 2
@@ -246,17 +293,17 @@ class VarianceLoss(nn.Module):
 
         # Batch,3,img_h, image w
         weightedDiff = torch.einsum("abcd,acd->abcd", squaredDiff, resizedConf)
-        writer.add_image("weightedDiff", weightedDiff[0], iter_counter)
+        if log:
+            writer.add_images("variance/8_weightedDiff", weightedDiff, iteration)
 
         weightedVariance = weightedDiff / (totalConf + cfg.positive)
-        writer.add_image("weightedVariance", weightedVariance[0], iter_counter)
+        if log:
+            writer.add_images(
+                "variance/9_weightedVariance", weightedVariance, iteration
+            )
 
         # NOTE: Arbitrary Loss Scaling
-        result = (
-            torch.sum(weightedVariance)
-            / (proto.shape[1] * proto.shape[2])
-            * original.shape[0]
-        )
+        result = torch.sum(weightedVariance) / (proto.shape[1]) * original.shape[0]
 
         # if cfg.use_amp:
         # return result.half()
