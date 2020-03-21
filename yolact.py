@@ -260,8 +260,9 @@ class PredictionModule(nn.Module):
             .contiguous()
             .view(x.size(0), -1, self.num_classes)
         )
-        if cfg.gaussian:
-            conf = torch.sigmoid(conf)
+        # NOTE: Removed sigmoid because Softmax in unsupervised_loss.py
+        # if cfg.gaussian:
+        # conf = torch.sigmoid(conf)
 
         if cfg.eval_mask_branch:
             mask = (

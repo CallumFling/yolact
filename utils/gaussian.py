@@ -26,7 +26,10 @@ def lincomb(predictions=None, proto=None, masks=None):
 
 def rotation_matrix(theta):
     # Theta shape: torch.shape(batch,num_priors)
-    sin, cos = torch.sin(theta), torch.cos(theta)
+    sin, cos = (
+        torch.sin(theta / cfg.gauss_sensitivity),
+        torch.cos(theta / cfg.gauss_sensitivity),
+    )
 
     # shape: torch.shape(batch,num_priors,2)
     rot_0 = torch.stack((cos, -sin), dim=2)
@@ -37,8 +40,10 @@ def rotation_matrix(theta):
     return rot
 
 
-# @snoop
+@snoop
 def gauss_loc(loc):
+    # NOTE: Dumb Trick: Periodic Function with Modulo, and with defined
+
     # Σ is equal to RSS(R-1)
     # Cholesky=T=RS
     # calculate this instead
@@ -47,29 +52,24 @@ def gauss_loc(loc):
 
     mean = loc[:, :, :2]
     # mean = torch.tanh(mean)
-    mean = torch.fmod(mean, cfg.gauss_wrap)
+    mean = torch.sin(mean / cfg.gauss_sensitivity) * cfg.gauss_wrap
 
     theta = loc[:, :, 2]
     rot = rotation_matrix(theta)
 
     scale_coeff = loc[:, :, 3:5]
-    # Positive required
     scale_coeff = (
-        (torch.sign(scale_coeff) * cfg.max_scale)
-        - torch.fmod(scale_coeff, cfg.max_scale)
-    ) ** 2 + cfg.positive
+        torch.sin(scale_coeff / cfg.gauss_sensitivity) * cfg.max_scale
+        + cfg.max_scale
+        + cfg.positive
+    )
     scale = torch.diag_embed(scale_coeff)
     cholesky = rot @ scale
     return mean, cholesky
 
 
-# @snoop
-def mahalanobisGrid(predictions=None, maskShape=None, loc=None):
-    if maskShape is None:
-        maskShape = list(predictions["proto"].shape)[1:3]
-    if loc is None:
-        loc = predictions["loc"]
-
+@snoop
+def mahalanobisGrid(maskShape=None, loc=None):
     locShape = list(loc.shape)[:-1]
     mean, cholesky = gauss_loc(loc)
 
@@ -85,6 +85,7 @@ def mahalanobisGrid(predictions=None, maskShape=None, loc=None):
     # unsup: Cache this to optimize
     # becomes (0,0),(1,0),(2,0)...
     coordinate_list = torch.stack((i.view(-1), j.view(-1)), dim=1)
+    # NOTE: ORDER OF OPERATIONS HERE MIGHT BE WRONG
     diff = coordinate_list - mean
 
     # this is Squared Mahalanobis
@@ -101,10 +102,9 @@ def mahalanobisGrid(predictions=None, maskShape=None, loc=None):
     return result
 
 
-def unnormalGaussian(predictions=None, maskShape=None, loc=None):
+def unnormalGaussian(maskShape=None, loc=None):
     result = torch.pow(
-        torch.tensor([math.e]),
-        mahalanobisGrid(predictions=predictions, maskShape=maskShape, loc=loc),
+        torch.tensor([math.e]), mahalanobisGrid(maskShape=maskShape, loc=loc),
     )
     if cfg.use_amp:
         return result.half()

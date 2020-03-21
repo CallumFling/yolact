@@ -42,7 +42,7 @@ os.environ["GPU_DEBUG"] = "0"
 # Oof
 import eval as eval_script
 
-# torch.autograd.set_detect_anomaly(True)
+torch.autograd.set_detect_anomaly(True)
 
 
 def str2bool(v):

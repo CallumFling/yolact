@@ -78,6 +78,15 @@ class AutoEncoder(nn.Module):
         # F.grid_sample with default mode=bilinear is exploded
         # no oom issue here
 
+        # NOTE: Grid_Sample behavior
+        # [[1,2]
+        # [3,4]]
+
+        # [-1,-1] -> 1
+        # [1,-1] -> 2
+        # [-1,1] -> 2
+        # [1,1] ->4
+
         # NOTE: Using padding border, not bilinear
         # Dim: Batch*priors,3,H,W
         sampled = F.grid_sample(
@@ -93,7 +102,9 @@ class AutoEncoder(nn.Module):
         )
 
         # Dim Batch*Prior, 3, H, W
-        loss = F.mse_loss(sampled, result, reduction="none")
+        # NOTE: fixed flipped input target
+        # loss = F.mse_loss(sampled, result, reduction="none")
+        loss = F.mse_loss(result, sampled, reduction="none")
 
         # Dim Batch*Prior
         loss = torch.mean(loss, dim=(1, 2, 3))

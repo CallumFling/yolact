@@ -158,7 +158,7 @@ class UnsupervisedLoss(nn.Module):
         # conf matrix: torch.size(batch_size,num_priors,num_priors)
         conf_matrix = conf.unsqueeze(1).permute(0, 2, 1) @ conf.unsqueeze(1)
         # Remove Lower Triangle and Diagonal
-        final_scale = iou * conf_matrix.triu(1)
+        final_scale = iou * conf_matrix.triu(diagonal=1)
 
         try:
             loc = loc[torch.arange(loc.shape[0]).unsqueeze(-1), keep]
@@ -216,6 +216,7 @@ class VarianceLoss(nn.Module):
 
         # Dim: Batch, Anchors, i, j
         assembledMask = gaussian.lincomb(proto=proto, masks=mask)
+        assembledMask = torch.sigmoid(assembledMask)
         if log:
             writer.add_images(
                 "variance/1_lincomb",
@@ -223,7 +224,6 @@ class VarianceLoss(nn.Module):
                 iteration,
                 dataformats="NHWC",
             )
-        assembledMask = torch.sigmoid(assembledMask)
 
         attention = assembledMask * unnormalGaussian
         if log:
