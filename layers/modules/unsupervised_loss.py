@@ -196,6 +196,10 @@ class VarianceLoss(nn.Module):
         log = iteration % 1 == 0
         # original is [batch_size, 3, img_h, img_w]
         original = original.float()
+        if log:
+            writer.add_images(
+                "variance/-1_original", original, iteration, dataformats="NCHW",
+            )
 
         resizeShape = list(original.shape)[-2:]
 
@@ -303,18 +307,20 @@ class VarianceLoss(nn.Module):
 
         # Dim: batch, 3, img_h, img_w
         squaredDiff = (original - weightedMean) ** 2
+        if log:
+            writer.add_images("variance/8_squaredDiff", squaredDiff, iteration)
         # if cfg.use_amp:
         # squaredDiff = squaredDiff.half()
 
         # Batch,3,img_h, image w
         weightedDiff = torch.einsum("abcd,acd->abcd", squaredDiff, resizedConf)
         if log:
-            writer.add_images("variance/8_weightedDiff", weightedDiff, iteration)
+            writer.add_images("variance/9_weightedDiff", weightedDiff, iteration)
 
         weightedVariance = weightedDiff / (totalConf + cfg.positive)
         if log:
             writer.add_images(
-                "variance/9_weightedVariance", weightedVariance, iteration
+                "variance/10_weightedVariance", weightedVariance, iteration
             )
 
         # NOTE: Arbitrary Loss Scaling

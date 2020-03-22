@@ -42,7 +42,7 @@ os.environ["GPU_DEBUG"] = "0"
 # Oof
 import eval as eval_script
 
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 
 
 def str2bool(v):
@@ -444,9 +444,9 @@ def train():
                 continue
 
             for datum in data_loader:
-                if iteration % 100 == 0:
-                    for i in range(datum.shape[0]):
-                        writer.add_image("datum/" + str(i), datum[i], iteration)
+                # if iteration % 100 == 0:
+                # for i in range(datum.shape[0]):
+                # writer.add_image("datum/" + str(i), datum[i], iteration)
                 # import cv2
                 # __import__("pdb").set_trace()
                 # pdb.set_trace()
