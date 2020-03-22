@@ -1045,7 +1045,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "gaussian": True,
         "sampling_grid": [128, 128],
         "use_maskiou": False,
-        "iou_gauss_dim": [50, 50],
+        "iou_gauss_dim": [30, 30],
         # Wrap coordinates at 2
         "gauss_wrap": 1,
         "gauss_sensitivity": 10,
@@ -1059,6 +1059,10 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         # "mask_proto_prototype_activation": torch.tanh,
         "mask_proto_coeff_activation": torch.tanh,
         # "preserve_aspect_ratio": True,
+        "background_net": [(256, 3, {"padding": 1})] * 3
+        + [(None, -2, {}), (256, 3, {"padding": 1}), (None, -2, {})]
+        + [(1, 3, {})],
+        "background_activation": torch.sigmoid,
     }
 )
 
