@@ -644,13 +644,14 @@ class Yolact(nn.Module):
             )
 
         # For use in evaluation
-        self.detect = Detect(
-            cfg.num_classes,
-            bkg_label=0,
-            top_k=cfg.nms_top_k,
-            conf_thresh=cfg.nms_conf_thresh,
-            nms_thresh=cfg.nms_thresh,
-        )
+        if not cfg.gaussian:
+            self.detect = Detect(
+                cfg.num_classes,
+                bkg_label=0,
+                top_k=cfg.nms_top_k,
+                conf_thresh=cfg.nms_conf_thresh,
+                nms_thresh=cfg.nms_thresh,
+            )
 
     def save_weights(self, path):
         """ Saves the model's weights using compression because the file sizes were getting too big. """
