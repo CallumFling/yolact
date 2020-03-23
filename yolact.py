@@ -794,7 +794,6 @@ class Yolact(nn.Module):
                 if cfg.gaussian:
                     background_out = self.background_net(proto_x)
                     background_out = cfg.background_activation(background_out)
-                    background_out = background_out.permute(0, 2, 3, 1).contiguous()
 
                 if cfg.mask_proto_prototypes_as_features:
                     # Clone here because we don't want to permute this, though idk if contiguous makes this unnecessary
@@ -857,6 +856,7 @@ class Yolact(nn.Module):
             pred_outs["proto"] = proto_out
         if cfg.gaussian:
             pred_outs["background"] = background_out
+            pred_outs["proto_x"] = proto_x
 
         if self.training:
             # For the extra loss functions

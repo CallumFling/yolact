@@ -1043,12 +1043,24 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "name": "unsupervised",
         "positive": 1e-3,  # Ensure positive-semi definite
         "gaussian": True,
-        "sampling_grid": [128, 128],
+        "feature_sampling_grid": [20, 20],
+        # Ground truth (original)
+        "original_sampling_grid": [50, 50],
         "use_maskiou": False,
         "iou_gauss_dim": [30, 30],
         # Wrap coordinates at 2
         "gauss_wrap": 1,
         "gauss_sensitivity": 10,
+        # Convolutional layer dimensions: cfg.num_features, ...
+        "ae_dim": [32, 16, 8],
+        "encoder_layer_params": {"kernel_size": 3, "padding": 1, "stride": 2},
+        "decoder_layer_params": {
+            "kernel_size": 3,
+            "padding": 1,
+            "stride": 2,
+            "output_padding": 1,
+        },
+        "decoder_interpolate_scale": 1.5,
         # for Gaussian
         "max_scale": 1.5,
         "max_num_detections": 30,
@@ -1061,7 +1073,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         # "preserve_aspect_ratio": True,
         "background_net": [(256, 3, {"padding": 1})] * 3
         + [(None, -2, {}), (256, 3, {"padding": 1}), (None, -2, {})]
-        + [(1, 3, {})],
+        + [(3, 3, {})],
         "background_activation": torch.sigmoid,
     }
 )

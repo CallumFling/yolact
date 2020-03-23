@@ -58,6 +58,10 @@ class UnsupervisedLoss(nn.Module):
         mask_data = predictions["mask"]
         # proto* shape: torch.size(batch_size,mask_h,mask_w,mask_dim)
         proto_data = predictions["proto"]
+        # proto_x* shape: torch.size(batch_size, cfg.num_features, i,j)
+        proto_x_data = predictions["proto_x"]
+        # background shape: torch.size(batch_size,3,i,j)
+        background_data = predictions["background"]
 
         losses = {}
         with timer.env("Detect"):
@@ -67,6 +71,7 @@ class UnsupervisedLoss(nn.Module):
             # NOTE: Loss scaling to remove Backward errors
             losses["ae_loss"] = self.ae_scaled_loss(
                 original,
+                proto_x_data,
                 all_results["iou"],
                 all_results["keep"],
                 all_results["loc"],
@@ -151,7 +156,7 @@ class UnsupervisedLoss(nn.Module):
             "keep": sorted_iou_idx,
         }
 
-    def ae_scaled_loss(self, original, iou, keep, loc, conf):
+    def ae_scaled_loss(self, original, proto_x, iou, keep, loc, conf):
         # AE input should be of size [batch_size, 3, img_h, img_w]
         # conf shape: torch.size(batch_size,num_priors)
 
@@ -167,7 +172,7 @@ class UnsupervisedLoss(nn.Module):
             __import__("pdb").set_trace()
         # Dim batch,priors
         # try:
-        ae_loss = self.autoencoder(original, loc)
+        ae_loss = self.autoencoder(original, proto_x, loc)
         # except RuntimeError:
         # pdb.set_trace()
         # ae_loss but in scores
