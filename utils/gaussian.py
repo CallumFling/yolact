@@ -141,7 +141,7 @@ def sampling_grid(loc, gridShape, inverse=False):
     # gridShape = cfg.sampling_grid
 
     # mean, cov = gauss_loc(loc)
-    mean, cholesky = gauss_loc(loc)
+    mean, cholesky = gauss_loc(loc, inverse)
     # Batch*Priors, 2,2
     # cov = cov.view(-1, 2, 2)
     cholesky = cholesky.view(-1, 2, 2)
