@@ -1045,7 +1045,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "gaussian": True,
         "feature_sampling_grid": [20, 20],
         # Ground truth (original)
-        "original_sampling_grid": [50, 50],
+        "original_sampling_grid": [100, 100],
         "use_maskiou": False,
         "iou_gauss_dim": [30, 30],
         # Wrap coordinates at 2

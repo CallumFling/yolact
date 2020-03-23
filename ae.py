@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from layers.interpolate import InterpolateModule as Interpolate
-from utils.gaussian import gauss_loc
+from utils.gaussian import gauss_loc, sampling_grid
 
 from data import cfg
 import pdb
@@ -63,9 +63,9 @@ class AutoEncoder(nn.Module):
         # loc shape: torch.size(batch_size,num_priors,5)
 
         # batch, priors, img_h, img_w, 2
-        feature_grid = samplingGrid(loc, cfg.feature_sampling_grid)
+        feature_grid = sampling_grid(loc, cfg.feature_sampling_grid)
         feature_grid_shape = list(feature_grid.shape)
-        original_grid = samplingGrid(loc, cfg.original_sampling_grid)
+        original_grid = sampling_grid(loc, cfg.original_sampling_grid)
         original_grid_shape = list(original_grid.shape)
 
         # locShape = list(loc.shape)
@@ -148,42 +148,3 @@ class AutoEncoder(nn.Module):
         # return loss / (locShape[0] * locShape[1])
 
 
-def samplingGrid(loc, gridShape):
-    # img_dim in tensor form
-    # Batch, Priors
-    locShape = list(loc.shape)[:-1]
-
-    # H, W
-    # gridShape = cfg.sampling_grid
-
-    # mean, cov = gauss_loc(loc)
-    mean, cholesky = gauss_loc(loc)
-    # Batch*Priors, 2,2
-    # cov = cov.view(-1, 2, 2)
-    cholesky = cholesky.view(-1, 2, 2)
-
-    # Batch*Priors, 2
-    mean = mean.view(-1, 2)
-
-    j, i = torch.meshgrid(
-        torch.linspace(-1, 1, gridShape[0]), torch.linspace(-1, 1, gridShape[1]),
-    )
-    i, j = i.contiguous(), j.contiguous()
-    # if cfg.use_amp:
-    # i, j = i.half(), j.half()
-
-    # mesh,2
-    # becomes tensor of [(0,0),(1,0),(2,0)...]
-    coordinate_list = torch.stack((i.view(-1), j.view(-1)), dim=1)
-
-    # Coordinates, Batch*Priors, 2
-    # dab to be able to add the mean
-    # Batch, 2,2 vs mesh, 2 -> Mesh, Batch, 2
-    transformed_coords = torch.einsum("abc,dc->dab", cholesky, coordinate_list) + mean
-
-    # Turn into ADB: Batch*Prior, Mesh, 2
-    transformed_coords = transformed_coords.permute(1, 0, 2)
-
-    # Dim Batch*Prior, H,W,2->batch, priors, img_h, img_w, 2
-    reshaped_coords = transformed_coords.view([locShape[0]] + [-1] + gridShape + [2])
-    return reshaped_coords
