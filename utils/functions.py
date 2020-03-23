@@ -201,6 +201,7 @@ def make_net(in_channels, conf, include_last_relu=True):
                 if num_channels is None:
                     layer = InterpolateModule(
                         scale_factor=-kernel_size,
+                        recompute_scale_factor=False,
                         mode="bilinear",
                         align_corners=False,
                         **layer_cfg[2]

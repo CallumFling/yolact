@@ -794,6 +794,7 @@ class Yolact(nn.Module):
                 if cfg.gaussian:
                     background_out = self.background_net(proto_x)
                     background_out = cfg.background_activation(background_out)
+                    cfg.background_shape = list(background_out.shape)[-2:]
 
                 if cfg.mask_proto_prototypes_as_features:
                     # Clone here because we don't want to permute this, though idk if contiguous makes this unnecessary

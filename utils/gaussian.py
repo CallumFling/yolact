@@ -50,7 +50,7 @@ def gauss_loc(loc, inverse=False):
     # Cholesky=T=RS
     # calculate this instead
     # loc shape: torch.size(batch_size,num_priors,5)
-    locShape = list(loc.shape)
+    # locShape = list(loc.shape)
 
     mean = loc[:, :, :2]
     # mean = torch.tanh(mean)
@@ -154,18 +154,27 @@ def sampling_grid(loc, gridShape, inverse=False):
     # Coordinates, Batch*Priors, 2
     # dab to be able to add the mean
     # Batch, 2,2 vs mesh, 2 -> Mesh, Batch, 2
+
     if not inverse:
         transformed_coords = (
             torch.einsum("abc,dc->dab", cholesky, coordinate_list) + mean
         )
     else:
+        # coordinate_list shape: mesh,2 -> mesh, batch*priors, 2
+        coordinate_list = coordinate_list.unsqueeze(1).repeat(
+            1, locShape[0] * locShape[1], 1
+        )
         transformed_coords = torch.einsum(
-            "abc,dc->dab", cholesky, coordinate_list - mean
+            # Cholesky shape: batch*priors, 2,2
+            # mean shape: batch*priors, 2
+            "abc,dac->dab",
+            cholesky,
+            coordinate_list - mean,
         )
 
     # Turn into ADB: Batch*Prior, Mesh, 2
     transformed_coords = transformed_coords.permute(1, 0, 2)
 
     # Dim Batch*Prior, H,W,2->batch, priors, img_h, img_w, 2
-    reshaped_coords = transformed_coords.view([locShape[0]] + [-1] + gridShape + [2])
+    reshaped_coords = transformed_coords.view(locShape + gridShape + [2])
     return reshaped_coords

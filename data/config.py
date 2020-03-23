@@ -1071,10 +1071,16 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         # "mask_proto_prototype_activation": torch.tanh,
         "mask_proto_coeff_activation": torch.tanh,
         # "preserve_aspect_ratio": True,
-        "background_net": [(256, 3, {"padding": 1})] * 3
-        + [(None, -2, {}), (256, 3, {"padding": 1}), (None, -2, {})]
+        "background_net": [
+            (256, 3, {"padding": 1}),
+            (128, 3, {"padding": 1}),
+            (64, 3, {"padding": 1}),
+        ]
+        + [(None, -1.5, {}), (16, 3, {"padding": 1}), (None, -1.5, {})]
         + [(3, 3, {})],
         "background_activation": torch.sigmoid,
+        # set at runtime
+        "background_shape": None,
     }
 )
 

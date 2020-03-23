@@ -65,28 +65,19 @@ class AutoEncoder(nn.Module):
         # batch, priors, img_h, img_w, 2
         feature_grid = sampling_grid(loc, cfg.feature_sampling_grid)
         feature_grid_shape = list(feature_grid.shape)
-        original_grid = sampling_grid(loc, cfg.original_sampling_grid)
-        original_grid_shape = list(original_grid.shape)
+        # batch*priors, img_h,img_w,2
+        feature_grid = feature_grid.reshape(-1, *feature_grid_shape[2:])
 
         # locShape = list(loc.shape)
         proto_x_shape = list(proto_x.shape)
-        original_shape = list(original.shape)
 
         # Dim: Batch, Priors, 3, img_h, img_w
         proto_x = proto_x.expand([feature_grid_shape[1]] + proto_x_shape).permute(
             1, 0, 2, 3, 4
         )
-        original = original.expand([original_grid_shape[1]] + original_shape).permute(
-            1, 0, 2, 3, 4
-        )
         # Dim: Batch*Priors, 3, img_h, img_w
         # unsup: changed view to reshape
         proto_x = proto_x.reshape(-1, *proto_x_shape[1:])
-        original = original.reshape(-1, *original_shape[1:])
-
-        # batch*priors, img_h,img_w,2
-        feature_grid = feature_grid.reshape(-1, *feature_grid_shape[2:])
-        original_grid = original_grid.reshape(-1, *original_grid_shape[2:])
 
         # @rayandrew
         # so my analysis here
@@ -111,40 +102,32 @@ class AutoEncoder(nn.Module):
             padding_mode="border",
             mode="bilinear",
         )  # this seem the fixes
-        original_sample = F.grid_sample(
-            original,
-            original_grid,
-            align_corners=False,
-            padding_mode="border",
-            mode="bilinear",
-        )  # this seem the fixes
 
         result = self.encoder(feature_sample)
         result = self.decoder(result)
 
-        # NOTE: Using Bilinear
-        result = F.interpolate(
-            result,
-            size=cfg.original_sampling_grid,
-            mode="bilinear",
-            align_corners=False,
+        reconstruction_grid = sampling_grid(loc, cfg.background_shape, inverse=True)
+        reconstruction_grid_shape = list(reconstruction_grid.shape)
+        # batch*priors, img_h,img_w,2
+        reconstruction_grid = reconstruction_grid.reshape(
+            -1, *reconstruction_grid_shape[2:]
         )
 
-        # Dim Batch*Prior, 3, H, W
-        # NOTE: fixed flipped input target
-        loss = F.mse_loss(result, original_sample, reduction="none")
+        reconstruction = F.grid_sample(
+            result,
+            reconstruction_grid,
+            align_corners=False,
+            padding_mode="zeros",
+            mode="bilinear",
+        )
 
-        # Dim Batch*Prior
-        loss = torch.mean(loss, dim=(1, 2, 3))
-        # loss = loss.sum(dim=(1, 2, 3))
+        # Batch, Priors, 3, i,j
+        reconstruction = reconstruction.view(
+            *reconstruction_grid_shape[:2], 3, *reconstruction_grid_shape[2:4]
+        )
 
-        # Dim Batch,Priors
-        loss = loss.view(*feature_grid_shape[:2])
-
-        # Scale loss by confidence, and by the number of Batches and Priors
-        if cfg.use_amp:
-            return loss.half()
-        return loss
+        __import__("pdb").set_trace()
+        return reconstruction
         # return loss / (locShape[0] * locShape[1])
 
 
