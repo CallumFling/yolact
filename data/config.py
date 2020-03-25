@@ -1041,7 +1041,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "nms_top_k_conf": 100,
         "nms_top_k_iou": 20,
         "name": "unsupervised",
-        "positive": 1e-3,  # Ensure positive-semi definite
+        "positive": 1e-4,  # Ensure positive-semi definite
         "gaussian": True,
         "feature_sampling_grid": [20, 20],
         # Ground truth (original)
@@ -1050,7 +1050,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "iou_gauss_dim": [30, 30],
         # Wrap coordinates at 2
         "gauss_wrap": 1,
-        "gauss_sensitivity": 10,
+        "gauss_sensitivity": 1,
         # Convolutional layer dimensions: cfg.num_features, ...
         "ae_dim": [32, 16, 8],
         "encoder_layer_params": {"kernel_size": 3, "padding": 1, "stride": 2},

@@ -42,7 +42,11 @@ os.environ["GPU_DEBUG"] = "0"
 # Oof
 import eval as eval_script
 
-# torch.autograd.set_detect_anomaly(True)
+torch.manual_seed(0)
+torch.autograd.set_detect_anomaly(True)
+
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 
 def str2bool(v):
@@ -218,7 +222,7 @@ if args.batch_size // torch.cuda.device_count() < 6:
     cfg.freeze_bn = True
 
 if cfg.gaussian:
-    loss_types = ["ae_loss", "variance_loss"]
+    loss_types = ["background", "reconstruction", "background_consistency"]
 else:
     loss_types = ["B", "C", "M", "P", "D", "E", "S", "I"]
 

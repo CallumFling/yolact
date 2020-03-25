@@ -6,6 +6,8 @@ import torchvision.transforms.functional as TF
 from skimage import io
 import accimage
 
+np.random.seed(0)
+
 try:
     from data.config import cfg
 except ImportError:

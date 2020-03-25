@@ -11,6 +11,8 @@ import pdb
 from torchvision.utils import make_grid
 
 from torch.utils.tensorboard import SummaryWriter
+import dynamic
+
 import torchsnooper
 import snoop
 
@@ -46,57 +48,61 @@ class UnsupervisedLoss(nn.Module):
         if self.nms_thresh <= 0:
             raise ValueError("nms_threshold must be non negative.")
 
-    def forward(self, original, predictions):
+    def forward(self, original, pred):
+        # predictions: ['loc', 'conf', 'mask', 'proto', 'background', 'proto_x'])
         # loc shape: torch.size(batch_size,num_priors,6)
-        loc_data = predictions["loc"]
+        # masks shape: torch.size(batch_size,num_priors,mask_dim)
+        # proto* shape: torch.size(batch_size,mask_h,mask_w,mask_dim)
+        # proto_x* shape: torch.size(batch_size, cfg.num_features, i,j)
+        # background shape: torch.size(batch_size,3,i,j)
+
         # conf shape: torch.size(batch_size,num_priors,num_classes)
-        conf_data = predictions["conf"]
         # Softmaxed confidence in Foreground
         # Shape: batch,num_priors
-        conf_data = F.softmax(conf_data, dim=2)[:, :, 1]
-        # masks shape: torch.size(batch_size,num_priors,mask_dim)
-        mask_data = predictions["mask"]
-        # proto* shape: torch.size(batch_size,mask_h,mask_w,mask_dim)
-        proto_data = predictions["proto"]
-        # proto_x* shape: torch.size(batch_size, cfg.num_features, i,j)
-        proto_x_data = predictions["proto_x"]
-        # background shape: torch.size(batch_size,3,i,j)
-        background_data = predictions["background"]
+        pred["conf"] = F.softmax(pred["conf"], dim=2)[:, :, 1]
 
         losses = {}
         with timer.env("Detect"):
-            all_results = self.detect(conf_data, loc_data, mask_data)
-            keep = all_results["keep"]
-            # AE Scaled loss needs non-kept Detections
-            # NOTE: Loss scaling to remove Backward errors
-            losses["ae_loss"] = self.ae_scaled_loss(
+            # detections
+            dets = self.detect(pred["conf"], pred["loc"], pred["mask"])
+            keep = dets["keep"]
+
+            pred["loc"] = dets["loc"][
+                torch.arange(dets["loc"].shape[0]).unsqueeze(-1), keep
+            ]
+            pred["mask"] = dets["mask"][
+                torch.arange(dets["mask"].shape[0]).unsqueeze(-1), keep
+            ]
+            pred["conf"] = torch.gather(dets["conf"], 1, keep)
+            pred["reconstruction"] = self.autoencoder(
+                original, pred["proto_x"], pred["loc"]
+            )
+
+            # Std over batch dimension
+            losses["background_consistency"] = torch.mean(
+                torch.std(pred["background"], dim=0) ** 2
+            )
+            losses["background"], losses["reconstruction"] = self.variance(
                 original,
-                proto_x_data,
-                all_results["iou"],
-                all_results["keep"],
-                all_results["loc"],
-                all_results["conf"],
+                pred["loc"],
+                pred["mask"],
+                pred["conf"],
+                pred["proto"],
+                pred["reconstruction"],
+                pred["background"],
             )
 
-            # IoU not included because not needed by variance
-            out = {
-                "loc": all_results["loc"][
-                    torch.arange(all_results["loc"].shape[0]).unsqueeze(-1), keep
-                ],
-                "mask": all_results["mask"][
-                    torch.arange(all_results["mask"].shape[0]).unsqueeze(-1), keep
-                ],
-                "conf": torch.gather(all_results["conf"], 1, keep),
-                "proto": proto_data,
-            }
+            scalers = dynamic.read()
+            writer.add_scalars("Scalers/", scalers, iteration)
+            writer.add_scalars("Raw_Losses/", losses, iteration)
 
-            losses["variance_loss"] = self.variance(
-                original, out["loc"], out["mask"], out["conf"], out["proto"]
-            )
-            print(losses)
-            out["losses"] = losses
+            for key in losses:
+                losses[key] = scalers[key] * losses[key]
 
-        return out
+            writer.add_scalars("Scaled_Losses/", losses, iteration)
+
+            pred["losses"] = losses
+        return pred
 
     def detect(self, conf, loc, mask):
         # IoU Threshold, Conf_Threshold, IoU_Thresh
@@ -149,43 +155,12 @@ class UnsupervisedLoss(nn.Module):
         _, sorted_iou_idx = torch.topk(iou_max, top_k_iou, dim=-1, largest=False)
 
         return {
-            "iou": gauss_iou,
+            # "iou": gauss_iou,
             "loc": sorted_loc,
             "mask": sorted_mask,
             "conf": sorted_conf,
             "keep": sorted_iou_idx,
         }
-
-    def ae_scaled_loss(self, original, proto_x, iou, keep, loc, conf):
-        # AE input should be of size [batch_size, 3, img_h, img_w]
-        # conf shape: torch.size(batch_size,num_priors)
-
-        # conf matrix: torch.size(batch_size,num_priors,num_priors)
-        conf_matrix = conf.unsqueeze(1).permute(0, 2, 1) @ conf.unsqueeze(1)
-        # Remove Lower Triangle and Diagonal
-        final_scale = iou * conf_matrix.triu(diagonal=1)
-
-        try:
-            loc = loc[torch.arange(loc.shape[0]).unsqueeze(-1), keep]
-        except Exception as e:
-            print(e)
-            __import__("pdb").set_trace()
-        # Dim batch,priors
-        # try:
-        ae_loss = self.autoencoder(original, proto_x, loc)
-        # except RuntimeError:
-        # pdb.set_trace()
-        # ae_loss but in scores
-        # batch, priors, priors
-        # pdb.set_trace()
-        ae_grid = torch.zeros_like(final_scale)
-        ae_grid[torch.arange(ae_grid.shape[0]).unsqueeze(-1), keep] = ae_loss.unsqueeze(
-            2
-        ).repeat(1, 1, ae_grid.size(2))
-        ae_grid = ae_grid * final_scale
-
-        # Divide by Priors
-        return torch.sum(ae_grid)
 
 
 class MyException(Exception):
@@ -197,7 +172,8 @@ class VarianceLoss(nn.Module):
         super(VarianceLoss, self).__init__()
         pass
 
-    def forward(self, original, loc, mask, conf, proto):
+    @snoop
+    def forward(self, original, loc, mask, conf, proto, reconstruction, background):
         log = iteration % 1 == 0
         # original is [batch_size, 3, img_h, img_w]
         original = original.float()
@@ -205,8 +181,17 @@ class VarianceLoss(nn.Module):
             writer.add_images(
                 "variance/-1_original", original, iteration, dataformats="NCHW",
             )
+            writer.add_images(
+                "variance/0_background", background, iteration, dataformats="NCHW",
+            )
 
-        resizeShape = list(original.shape)[-2:]
+        originalShape = list(original.shape)[-2:]
+
+        batch = original.size(0)
+        # Batch, Priors, 3, i,j
+        reconstructionShape = list(reconstruction.shape)
+        # Batch, 3, i,j
+        backgroundShape = list(background.shape)[-2:]
 
         # proto* shape: torch.size(batch,mask_h,mask_w,mask_dim)
         # proto_shape = list(predictions[0]["proto"].shape)[:2]
@@ -217,8 +202,8 @@ class VarianceLoss(nn.Module):
         # Display multiple images in Batch[0]
         if log:
             writer.add_images(
-                "variance/0_unnormalGaussian",
-                unnormalGaussian[0].unsqueeze(-1),
+                "variance/1_unnormalGaussian",
+                unnormalGaussian.view(-1, *proto_shape).unsqueeze(-1),
                 iteration,
                 dataformats="NHWC",
             )
@@ -228,8 +213,8 @@ class VarianceLoss(nn.Module):
         assembledMask = torch.sigmoid(assembledMask)
         if log:
             writer.add_images(
-                "variance/1_lincomb",
-                assembledMask[0].unsqueeze(-1),
+                "variance/2_lincomb",
+                assembledMask.reshape(-1, *proto_shape).unsqueeze(-1),
                 iteration,
                 dataformats="NHWC",
             )
@@ -237,8 +222,8 @@ class VarianceLoss(nn.Module):
         attention = assembledMask * unnormalGaussian
         if log:
             writer.add_images(
-                "variance/2_attention",
-                attention[0].unsqueeze(-1),
+                "variance/3_attention",
+                attention.reshape(-1, *proto_shape).unsqueeze(-1),
                 iteration,
                 dataformats="NHWC",
             )
@@ -248,91 +233,132 @@ class VarianceLoss(nn.Module):
         maskConfidence = torch.einsum("abcd,ab->abcd", attention, conf)
         if log:
             writer.add_images(
-                "variance/3_maskConfidence",
-                maskConfidence[0].unsqueeze(-1),
+                "variance/4_maskConfidence",
+                maskConfidence.reshape(-1, *proto_shape).unsqueeze(-1),
                 iteration,
                 dataformats="NHWC",
             )
 
-        # unsup: REMOVE CHANNEL DIMENSION HERE, since Pad_sequence is summed, it does nothing
-        # Confidence in background, see desmos
-        # Dim: batch, h, w
-        finalConf = 1 - torch.sum(
-            (maskConfidence ** 2)
-            / (
-                torch.sum(maskConfidence, dim=1, keepdim=True).repeat(
-                    1, maskConfidence.size(1), 1, 1
-                )
-                + cfg.positive
-            ),
+        # Batch, i,j
+        # if NaN, use Softmax, because no possible undefined
+        # SoftMax to approximate max, but we still need the proportion
+        # for use in background weights, to discourage overlapping
+        maximumConf = torch.max(
+            maskConfidence ** 2
+            / (torch.sum(maskConfidence, dim=1, keepdim=True) + cfg.positive),
             dim=1,
-        )
-
-        finalConf = torch.where(
-            torch.isnan(finalConf), torch.zeros_like(finalConf), finalConf
-        )
+        )[0]
         if log:
             writer.add_images(
-                "variance/4_finalConf",
-                finalConf.unsqueeze(1),
+                "variance/5_maximumConf",
+                maximumConf.unsqueeze(-1),
                 iteration,
-                dataformats="NCHW",
+                dataformats="NHWC",
             )
+        # maximumConf = torch.max(
+        # torch.softmax(maskConfidence, dim=1) * maskConfidence, dim=1
+        # )[0]
 
-        # unsup: Interpolation may be incorrect
-        # Dim batch, img_h, img_w
-        resizedConf = F.interpolate(
-            finalConf.unsqueeze(1), resizeShape, mode="bilinear", align_corners=False
+        # Batch, i,j
+        maximumConf = F.interpolate(
+            maximumConf.unsqueeze(1),
+            originalShape,
+            mode="bilinear",
+            align_corners=False,
         )[:, 0]
 
+        background = F.interpolate(
+            background, originalShape, mode="bilinear", align_corners=False
+        )
+
+        # batch, batch, 3,i,j
+        originalArray = original.unsqueeze(0).repeat(batch, 1, 1, 1, 1)
         if log:
             writer.add_images(
-                "variance/5_resizedConf",
-                resizedConf.unsqueeze(1),
+                "variance/6_originalArray",
+                originalArray.view(-1, 3, *originalShape),
                 iteration,
                 dataformats="NCHW",
             )
-        # if cfg.use_amp:
-        # finalConf = finalConf.half()
-        # resizedConf = resizedConf.half()
-
-        # unsup: AGGREGATING RESULTS BETWEEN BATCHES HERE
-        # Dim: h, w
-        totalConf = torch.sum(resizedConf, dim=0)
-        if log:
-            writer.add_image(
-                "variance/6_totalConf", totalConf, iteration, dataformats="HW"
-            )
-
-        # NOTE MAYBE WEIGHTEd MEAN NOT NORMALIZed OOPH RITE
-        # Dim 3, img_h, img_w
-        weightedMean = torch.einsum("abcd,acd->bcd", original, resizedConf) / totalConf
-        if log:
-            writer.add_image("variance/7_weightedMean", weightedMean, iteration)
-
-        # Dim: batch, 3, img_h, img_w
-        squaredDiff = (original - weightedMean) ** 2
-        if log:
-            writer.add_images("variance/8_squaredDiff", squaredDiff, iteration)
-        # if cfg.use_amp:
-        # squaredDiff = squaredDiff.half()
-
-        # Batch,3,img_h, image w
-        weightedDiff = torch.einsum("abcd,acd->abcd", squaredDiff, resizedConf)
-        if log:
-            writer.add_images("variance/9_weightedDiff", weightedDiff, iteration)
-
-        weightedVariance = weightedDiff / (totalConf + cfg.positive)
+        # batch, batch, i,j
+        # Confidence in background
+        confidenceArray = 1 - maximumConf.unsqueeze(0).repeat(batch, 1, 1, 1)
         if log:
             writer.add_images(
-                "variance/10_weightedVariance", weightedVariance, iteration
+                "variance/7_confidenceArray",
+                confidenceArray.view(-1, *originalShape).unsqueeze(-1),
+                iteration,
+                dataformats="NHWC",
+            )
+        # batch, batch, 3,i,j
+        backgroundArray = background.unsqueeze(1).repeat(1, batch, 1, 1, 1)
+        if log:
+            writer.add_images(
+                "variance/8_backgroundArray",
+                backgroundArray.view(-1, 3, *originalShape),
+                iteration,
+                dataformats="NCHW",
             )
 
-        # NOTE: Arbitrary Loss Scaling
-        result = torch.sum(weightedVariance) / (proto.shape[1]) * original.shape[0]
+        # Squared Error
+        # batch, batch, i,j
+        backgroundLoss = torch.sum((backgroundArray - originalArray) ** 2, dim=2)
+        if log:
+            writer.add_images(
+                "variance/9_backgroundLoss",
+                backgroundLoss.view(-1, *originalShape).unsqueeze(-1),
+                iteration,
+                dataformats="NHWC",
+            )
 
-        # if cfg.use_amp:
-        # return result.half()
+        backgroundLoss = confidenceArray * backgroundLoss
+        if log:
+            writer.add_images(
+                "variance/10_backgroundLoss",
+                backgroundLoss.view(-1, *originalShape).unsqueeze(-1),
+                iteration,
+                dataformats="NHWC",
+            )
+            writer.add_images(
+                "variance/11_reconstruction",
+                reconstruction.view(-1, 3, *reconstructionShape[-2:]),
+                iteration,
+                dataformats="NCHW",
+            )
 
-        # Normalize by number of elements in original image
-        return result
+        # Batch, Priors, 3, i,j -> Batch*priors, 3, i,j
+        reconstruction = reconstruction.view(-1, 3, *reconstructionShape[-2:])
+        reconstruction = F.interpolate(
+            reconstruction, originalShape, mode="bilinear", align_corners=False,
+        )
+        reconstruction = reconstruction.view(
+            *reconstructionShape[:2], 3, *originalShape
+        )
+
+        # Batch, priors, i,j
+        maskConfidence = F.interpolate(
+            maskConfidence, originalShape, mode="bilinear", align_corners=False,
+        )
+
+        # batch, priors, 3, i, j
+        original = original.unsqueeze(1).repeat(1, reconstructionShape[1], 1, 1, 1)
+        # batch, priors, i, j
+        reconstructionLoss = torch.sum((reconstruction - original) ** 2, dim=2)
+        writer.add_images(
+            "variance/12_reconstructionLoss",
+            reconstructionLoss.view(-1, *originalShape).unsqueeze(-1),
+            iteration,
+            dataformats="NHWC",
+        )
+        reconstructionLoss = reconstructionLoss * maskConfidence
+        writer.add_images(
+            "variance/13_reconstructionLoss",
+            reconstructionLoss.view(-1, *originalShape).unsqueeze(-1),
+            iteration,
+            dataformats="NHWC",
+        )
+
+        backgroundLoss = torch.mean(backgroundLoss)
+        reconstructionLoss = torch.mean(reconstructionLoss)
+        return backgroundLoss, reconstructionLoss
+

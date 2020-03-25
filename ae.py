@@ -126,8 +126,4 @@ class AutoEncoder(nn.Module):
             *reconstruction_grid_shape[:2], 3, *reconstruction_grid_shape[2:4]
         )
 
-        __import__("pdb").set_trace()
         return reconstruction
-        # return loss / (locShape[0] * locShape[1])
-
-

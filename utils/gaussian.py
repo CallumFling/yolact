@@ -40,7 +40,7 @@ def rotation_matrix(theta):
     return rot
 
 
-@snoop
+# @snoop
 def gauss_loc(loc, inverse=False):
     # NOTE: Dumb Trick: Periodic Function with Modulo, and with defined
     # NOTE: this is calculated twice, cache to optimize
@@ -74,13 +74,15 @@ def gauss_loc(loc, inverse=False):
     scale = torch.diag_embed(scale_coeff)
 
     if not inverse:
-        cholesky = rot @ scale
+        rs = rot @ scale
     else:
-        cholesky = scale @ rot
+        sr = scale @ rot
 
     # mean shape: torch.size(batch_size,num_priors,2)
     # cholesky shape: torch.size(batch_size,num_priors,2,2)
-    return mean, cholesky
+    if not inverse:
+        return mean, rs
+    return mean, sr
 
 
 # White as in white noise
@@ -95,10 +97,25 @@ def white_coordinates(shape):
     return coordinate_list
 
 
-@snoop
+# @snoop
 def mahalanobisGrid(maskShape, loc):
     locShape = list(loc.shape)[:-1]
-    mean, cholesky = gauss_loc(loc)
+    # rs as in Rotate Scale
+    mean, rs = gauss_loc(loc)
+
+    # Ensuring Positive-Definite https://stackoverflow.com/a/40575354/10702372
+    # Batch, priors, 2,2
+    covariance = rs @ rs.permute(0, 1, 3, 2) + cfg.positive * torch.eye(2)
+
+    # Ensuring non-singular matrix
+    # batch, priors
+    # singular = covariance.det() == 0
+    # covariance[singular] = torch.eye(2) * cfg.positive
+
+    cholesky = torch.cholesky(covariance)
+    # print("Is symmetric:", torch.all(covariance.permute(0, 1, 3, 2) == covariance))
+    # eig = torch.symeig(covariance)[0]
+    # print("Is positive definite:", torch.all(eig > 0))
 
     # Resize to Batch Muahalanobis Specs
     cholesky = cholesky.view(-1, 1, 2, 2)
@@ -141,10 +158,10 @@ def sampling_grid(loc, gridShape, inverse=False):
     # gridShape = cfg.sampling_grid
 
     # mean, cov = gauss_loc(loc)
-    mean, cholesky = gauss_loc(loc, inverse)
+    mean, rs = gauss_loc(loc, inverse)
     # Batch*Priors, 2,2
     # cov = cov.view(-1, 2, 2)
-    cholesky = cholesky.view(-1, 2, 2)
+    rs = rs.view(-1, 2, 2)
 
     # Batch*Priors, 2
     mean = mean.view(-1, 2)
@@ -156,19 +173,17 @@ def sampling_grid(loc, gridShape, inverse=False):
     # Batch, 2,2 vs mesh, 2 -> Mesh, Batch, 2
 
     if not inverse:
-        transformed_coords = (
-            torch.einsum("abc,dc->dab", cholesky, coordinate_list) + mean
-        )
+        transformed_coords = torch.einsum("abc,dc->dab", rs, coordinate_list) + mean
     else:
         # coordinate_list shape: mesh,2 -> mesh, batch*priors, 2
         coordinate_list = coordinate_list.unsqueeze(1).repeat(
             1, locShape[0] * locShape[1], 1
         )
         transformed_coords = torch.einsum(
-            # Cholesky shape: batch*priors, 2,2
+            # RS shape: batch*priors, 2,2
             # mean shape: batch*priors, 2
             "abc,dac->dab",
-            cholesky,
+            rs,
             coordinate_list - mean,
         )
 
