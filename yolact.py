@@ -330,9 +330,11 @@ class PredictionModule(nn.Module):
         preds = {"conf": conf, "mask": mask}
         if cfg.gaussian:
             preds["loc"] = gauss
-        else:
+
+            # priors shape: [priors, 4]
             priors = self.make_priors(conv_h, conv_w, x.device)
             preds["priors"] = priors
+        else:
             preds["loc"] = bbox
 
         if cfg.use_mask_scoring:
@@ -355,8 +357,13 @@ class PredictionModule(nn.Module):
                 # Iteration order is important (it has to sync up with the convout)
                 for j, i in product(range(conv_h), range(conv_w)):
                     # +0.5 because priors are in center-size notation
-                    x = (i + 0.5) / conv_w
-                    y = (j + 0.5) / conv_h
+                    if cfg.gaussian:
+                        # Normalize to [-1, 1]
+                        x = (i + 0.5) / conv_w * 2 - 1
+                        y = (j + 0.5) / conv_h * 2 - 1
+                    else:
+                        x = (i + 0.5) / conv_w
+                        y = (j + 0.5) / conv_h
 
                     for ars in self.aspect_ratios:
                         for scale in self.scales:
@@ -813,8 +820,7 @@ class Yolact(nn.Module):
 
         with timer.env("pred_heads"):
             pred_outs = {"loc": [], "conf": [], "mask": []}
-            if not cfg.gaussian:
-                pred_outs["priors"] = []
+            pred_outs["priors"] = []
 
             if cfg.use_mask_scoring:
                 pred_outs["score"] = []

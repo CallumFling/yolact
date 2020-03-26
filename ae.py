@@ -57,13 +57,13 @@ class AutoEncoder(nn.Module):
             )
         self.decoder = nn.Sequential(*modules)
 
-    def forward(self, original, proto_x, loc):
+    def forward(self, original, proto_x, loc, priors):
         # The input should be of size [batch_size, 3, img_h, img_w]
         # conf shape: torch.size(batch_size,num_priors,num_classes)
         # loc shape: torch.size(batch_size,num_priors,5)
 
         # batch, priors, img_h, img_w, 2
-        feature_grid = sampling_grid(loc, cfg.feature_sampling_grid)
+        feature_grid = sampling_grid(loc, cfg.feature_sampling_grid, priors)
         feature_grid_shape = list(feature_grid.shape)
         # batch*priors, img_h,img_w,2
         feature_grid = feature_grid.reshape(-1, *feature_grid_shape[2:])
@@ -106,7 +106,9 @@ class AutoEncoder(nn.Module):
         result = self.encoder(feature_sample)
         result = self.decoder(result)
 
-        reconstruction_grid = sampling_grid(loc, cfg.background_shape, inverse=True)
+        reconstruction_grid = sampling_grid(
+            loc, cfg.background_shape, priors, inverse=True
+        )
         reconstruction_grid_shape = list(reconstruction_grid.shape)
         # batch*priors, img_h,img_w,2
         reconstruction_grid = reconstruction_grid.reshape(

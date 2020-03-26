@@ -41,7 +41,7 @@ def rotation_matrix(theta):
 
 
 # @snoop
-def gauss_loc(loc, inverse=False):
+def gauss_loc(loc, priors, inverse=False):
     # NOTE: Dumb Trick: Periodic Function with Modulo, and with defined
     # NOTE: this is calculated twice, cache to optimize
     # NOTE: the name Cholesky is wrong, since the variable "cholesky" is not triangular
@@ -51,10 +51,14 @@ def gauss_loc(loc, inverse=False):
     # calculate this instead
     # loc shape: torch.size(batch_size,num_priors,5)
     # locShape = list(loc.shape)
-
+    # priorsShape = list(batch,priors, 4)
+    priors_mean = priors[:, :, :2]
     mean = loc[:, :, :2]
     # mean = torch.tanh(mean)
-    mean = torch.sin(mean / cfg.gauss_sensitivity) * cfg.gauss_wrap
+    mean = (
+        torch.sin(mean / cfg.gauss_sensitivity + torch.asin(priors_mean))
+        * cfg.gauss_wrap
+    )
 
     theta = loc[:, :, 2]
     rot = rotation_matrix(theta)
@@ -98,10 +102,10 @@ def white_coordinates(shape):
 
 
 # @snoop
-def mahalanobisGrid(maskShape, loc):
+def mahalanobisGrid(maskShape, loc, priors):
     locShape = list(loc.shape)[:-1]
     # rs as in Rotate Scale
-    mean, rs = gauss_loc(loc)
+    mean, rs = gauss_loc(loc, priors)
 
     # Ensuring Positive-Definite https://stackoverflow.com/a/40575354/10702372
     # Batch, priors, 2,2
@@ -140,16 +144,17 @@ def mahalanobisGrid(maskShape, loc):
     return result
 
 
-def unnormalGaussian(maskShape, loc):
+def unnormalGaussian(maskShape, loc, priors):
     result = torch.pow(
-        torch.tensor([math.e]), mahalanobisGrid(maskShape=maskShape, loc=loc),
+        torch.tensor([math.e]),
+        mahalanobisGrid(maskShape=maskShape, loc=loc, priors=priors),
     )
     if cfg.use_amp:
         return result.half()
     return result
 
 
-def sampling_grid(loc, gridShape, inverse=False):
+def sampling_grid(loc, gridShape, priors, inverse=False):
     # img_dim in tensor form
     # Batch, Priors
     locShape = list(loc.shape)[:-1]
@@ -158,7 +163,7 @@ def sampling_grid(loc, gridShape, inverse=False):
     # gridShape = cfg.sampling_grid
 
     # mean, cov = gauss_loc(loc)
-    mean, rs = gauss_loc(loc, inverse)
+    mean, rs = gauss_loc(loc, priors, inverse=inverse)
     # Batch*Priors, 2,2
     # cov = cov.view(-1, 2, 2)
     rs = rs.view(-1, 2, 2)

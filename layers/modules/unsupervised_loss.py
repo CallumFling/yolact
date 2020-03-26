@@ -60,11 +60,13 @@ class UnsupervisedLoss(nn.Module):
         # Softmaxed confidence in Foreground
         # Shape: batch,num_priors
         pred["conf"] = F.softmax(pred["conf"], dim=2)[:, :, 1]
+        # add a batch dimension
+        pred["priors"] = pred["priors"].unsqueeze(0).repeat(original.size(0), 1, 1)
 
         losses = {}
         with timer.env("Detect"):
             # detections
-            dets = self.detect(pred["conf"], pred["loc"], pred["mask"])
+            dets = self.detect(pred["conf"], pred["loc"], pred["mask"], pred["priors"])
             keep = dets["keep"]
 
             pred["loc"] = dets["loc"][
@@ -73,9 +75,12 @@ class UnsupervisedLoss(nn.Module):
             pred["mask"] = dets["mask"][
                 torch.arange(dets["mask"].shape[0]).unsqueeze(-1), keep
             ]
+            pred["priors"] = dets["priors"][
+                torch.arange(dets["priors"].shape[0]).unsqueeze(-1), keep
+            ]
             pred["conf"] = torch.gather(dets["conf"], 1, keep)
             pred["reconstruction"] = self.autoencoder(
-                original, pred["proto_x"], pred["loc"]
+                original, pred["proto_x"], pred["loc"], pred["priors"]
             )
 
             # Std over batch dimension
@@ -90,6 +95,7 @@ class UnsupervisedLoss(nn.Module):
                 pred["proto"],
                 pred["reconstruction"],
                 pred["background"],
+                pred["priors"],
             )
 
             scalers = dynamic.read()
@@ -104,7 +110,7 @@ class UnsupervisedLoss(nn.Module):
             pred["losses"] = losses
         return pred
 
-    def detect(self, conf, loc, mask):
+    def detect(self, conf, loc, mask, priors):
         # IoU Threshold, Conf_Threshold, IoU_Thresh
         """
         NO BATCH
@@ -123,11 +129,16 @@ class UnsupervisedLoss(nn.Module):
         )
         # loc with size [batch,num_priors, 4], or 5 for unsup
         sorted_loc = loc[torch.arange(loc.shape[0]).unsqueeze(-1), sorted_conf_idx]
-        # masks shape: Shape: [num_priors, mask_dim]
+        # masks shape: Shape: [batch,num_priors, mask_dim]
         sorted_mask = mask[torch.arange(mask.shape[0]).unsqueeze(-1), sorted_conf_idx]
+        sorted_priors = priors[
+            torch.arange(priors.shape[0]).unsqueeze(-1), sorted_conf_idx
+        ]
 
         # Dim: Batch, Detections, i,j
-        gauss = gaussian.unnormalGaussian(maskShape=cfg.iou_gauss_dim, loc=sorted_loc)
+        gauss = gaussian.unnormalGaussian(
+            maskShape=cfg.iou_gauss_dim, loc=sorted_loc, priors=sorted_priors
+        )
 
         gaussShape = list(gauss.shape)
         # jaccard overlap: (tensor) Shape: [box_a.size(0), box_b.size(0)]
@@ -159,6 +170,7 @@ class UnsupervisedLoss(nn.Module):
             "loc": sorted_loc,
             "mask": sorted_mask,
             "conf": sorted_conf,
+            "priors": sorted_priors,
             "keep": sorted_iou_idx,
         }
 
@@ -173,7 +185,9 @@ class VarianceLoss(nn.Module):
         pass
 
     @snoop
-    def forward(self, original, loc, mask, conf, proto, reconstruction, background):
+    def forward(
+        self, original, loc, mask, conf, proto, reconstruction, background, priors
+    ):
         log = iteration % 1 == 0
         # original is [batch_size, 3, img_h, img_w]
         original = original.float()
@@ -197,7 +211,9 @@ class VarianceLoss(nn.Module):
         # proto_shape = list(predictions[0]["proto"].shape)[:2]
         proto_shape = list(proto.shape)[1:3]
 
-        unnormalGaussian = gaussian.unnormalGaussian(maskShape=proto_shape, loc=loc)
+        unnormalGaussian = gaussian.unnormalGaussian(
+            maskShape=proto_shape, loc=loc, priors=priors
+        )
 
         # Display multiple images in Batch[0]
         if log:

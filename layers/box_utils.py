@@ -157,11 +157,11 @@ def change(gt, priors):
     """
     Compute the d_change metric proposed in Box2Pix:
     https://lmb.informatik.uni-freiburg.de/Publications/2018/UB18/paper-box2pix.pdf
-    
+
     Input should be in point form (xmin, ymin, xmax, ymax).
 
     Output is of shape [num_gt, num_priors]
-    Note this returns -change so it can be a drop in replacement for 
+    Note this returns -change so it can be a drop in replacement for
     """
     num_priors = priors.size(0)
     num_gt = gt.size(0)
@@ -278,7 +278,7 @@ def encode(matched, priors, use_yolo_regressors: bool = False):
     Encode bboxes matched with each prior into the format
     produced by the network. See decode for more details on
     this format. Note that encode(decode(x, p), p) = x.
-    
+
     Args:
         - matched: A tensor of bboxes in point form with shape [num_priors, 4]
         - priors:  The tensor of all priors with shape [num_priors, 4]
@@ -320,21 +320,21 @@ def decode(loc, priors, use_yolo_regressors: bool = False):
         b_y = (sigmoid(pred_y) - .5) / conv_h + prior_y
         b_w = prior_w * exp(loc_w)
         b_h = prior_h * exp(loc_h)
-    
+
     Note that loc is inputed as [(s(x)-.5)/conv_w, (s(y)-.5)/conv_h, w, h]
     while priors are inputed as [x, y, w, h] where each coordinate
     is relative to size of the image (even sigmoid(x)). We do this
     in the network by dividing by the 'cell size', which is just
     the size of the convouts.
-    
+
     Also note that prior_x and prior_y are center coordinates which
     is why we have to subtract .5 from sigmoid(pred_x and pred_y).
-    
+
     Args:
         - loc:    The predicted bounding boxes of size [num_priors, 4]
         - priors: The priorbox coords with size [num_priors, 4]
-    
-    Returns: A tensor of decoded relative coordinates in point form 
+
+    Returns: A tensor of decoded relative coordinates in point form
              form with size [num_priors, 4]
     """
 
@@ -435,7 +435,7 @@ def index2d(src, idx):
 
     In effect, this does
         out[i, j] = src[i, idx[i, j]]
-    
+
     Both src and idx should have the same size.
     """
 
