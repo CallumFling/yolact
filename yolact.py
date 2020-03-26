@@ -602,10 +602,6 @@ class Yolact(nn.Module):
             self.proto_net, cfg.mask_dim = make_net(
                 in_channels, cfg.mask_proto_net, include_last_relu=False
             )
-            if cfg.gaussian:
-                self.background_net, cfg.background_dim = make_net(
-                    in_channels, cfg.background_net, include_last_relu=False
-                )
 
             if cfg.mask_proto_bias:
                 cfg.mask_dim += 1
@@ -794,14 +790,8 @@ class Yolact(nn.Module):
 
                 proto_out = self.proto_net(proto_x)
                 proto_out = cfg.mask_proto_prototype_activation(proto_out)
-
                 if torch.isnan(proto_out).any():
                     __import__("pdb").set_trace()
-
-                if cfg.gaussian:
-                    background_out = self.background_net(proto_x)
-                    background_out = cfg.background_activation(background_out)
-                    cfg.background_shape = list(background_out.shape)[-2:]
 
                 if cfg.mask_proto_prototypes_as_features:
                     # Clone here because we don't want to permute this, though idk if contiguous makes this unnecessary
@@ -861,9 +851,12 @@ class Yolact(nn.Module):
 
         if proto_out is not None:
             pred_outs["proto"] = proto_out
+<<<<<<< HEAD
         if cfg.gaussian:
             pred_outs["background"] = background_out
             pred_outs["proto_x"] = proto_x
+=======
+>>>>>>> parent of 981fee7... Added Background predictor
 
         if self.training:
             # For the extra loss functions
