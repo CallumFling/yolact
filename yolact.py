@@ -851,12 +851,8 @@ class Yolact(nn.Module):
 
         if proto_out is not None:
             pred_outs["proto"] = proto_out
-<<<<<<< HEAD
         if cfg.gaussian:
-            pred_outs["background"] = background_out
             pred_outs["proto_x"] = proto_x
-=======
->>>>>>> parent of 981fee7... Added Background predictor
 
         if self.training:
             # For the extra loss functions
