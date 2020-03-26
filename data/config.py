@@ -1053,7 +1053,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "iou_gauss_dim": [50, 50],
         # Wrap coordinates at 2
         "gauss_wrap": 1,
-        "gauss_sensitivity": 1,
+        "gauss_sensitivity": 10,
         # Convolutional layer dimensions: cfg.num_features, ...
         "ae_dim": [32, 16, 8],
         "encoder_layer_params": {"kernel_size": 3, "padding": 1, "stride": 2},

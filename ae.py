@@ -106,9 +106,8 @@ class AutoEncoder(nn.Module):
         result = self.encoder(feature_sample)
         result = self.decoder(result)
 
-        reconstruction_grid = sampling_grid(
-            loc, cfg.background_shape, priors, inverse=True
-        )
+        originalShape = list(original.shape)[-2:]
+        reconstruction_grid = sampling_grid(loc, originalShape, priors, inverse=True)
         reconstruction_grid_shape = list(reconstruction_grid.shape)
         # batch*priors, img_h,img_w,2
         reconstruction_grid = reconstruction_grid.reshape(

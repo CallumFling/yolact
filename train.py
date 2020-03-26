@@ -48,6 +48,8 @@ torch.autograd.set_detect_anomaly(True)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
+# torch.autograd.set_detect_anomaly(True)
+
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -222,7 +224,7 @@ if args.batch_size // torch.cuda.device_count() < 6:
     cfg.freeze_bn = True
 
 if cfg.gaussian:
-    loss_types = ["background", "reconstruction", "background_consistency"]
+    loss_types = ["background", "reconstruction"]
 else:
     loss_types = ["B", "C", "M", "P", "D", "E", "S", "I"]
 

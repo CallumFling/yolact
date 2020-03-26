@@ -83,10 +83,6 @@ class UnsupervisedLoss(nn.Module):
                 original, pred["proto_x"], pred["loc"], pred["priors"]
             )
 
-            # Std over batch dimension
-            losses["background_consistency"] = torch.mean(
-                torch.std(pred["background"], dim=0) ** 2
-            )
             losses["background"], losses["reconstruction"] = self.variance(
                 original,
                 pred["loc"],
@@ -94,7 +90,6 @@ class UnsupervisedLoss(nn.Module):
                 pred["conf"],
                 pred["proto"],
                 pred["reconstruction"],
-                pred["background"],
                 pred["priors"],
             )
 
@@ -166,7 +161,6 @@ class UnsupervisedLoss(nn.Module):
         _, sorted_iou_idx = torch.topk(iou_max, top_k_iou, dim=-1, largest=False)
 
         return {
-            # "iou": gauss_iou,
             "loc": sorted_loc,
             "mask": sorted_mask,
             "conf": sorted_conf,
@@ -184,19 +178,13 @@ class VarianceLoss(nn.Module):
         super(VarianceLoss, self).__init__()
         pass
 
-    @snoop
-    def forward(
-        self, original, loc, mask, conf, proto, reconstruction, background, priors
-    ):
+    def forward(self, original, loc, mask, conf, proto, reconstruction, priors):
         log = iteration % 1 == 0
         # original is [batch_size, 3, img_h, img_w]
         original = original.float()
         if log:
             writer.add_images(
-                "variance/-1_original", original, iteration, dataformats="NCHW",
-            )
-            writer.add_images(
-                "variance/0_background", background, iteration, dataformats="NCHW",
+                "variance/0_original", original, iteration, dataformats="NCHW",
             )
 
         originalShape = list(original.shape)[-2:]
@@ -205,7 +193,6 @@ class VarianceLoss(nn.Module):
         # Batch, Priors, 3, i,j
         reconstructionShape = list(reconstruction.shape)
         # Batch, 3, i,j
-        backgroundShape = list(background.shape)[-2:]
 
         # proto* shape: torch.size(batch,mask_h,mask_w,mask_dim)
         # proto_shape = list(predictions[0]["proto"].shape)[:2]
@@ -255,86 +242,59 @@ class VarianceLoss(nn.Module):
                 dataformats="NHWC",
             )
 
+        maskConfidence = F.interpolate(
+            maskConfidence, originalShape, mode="bilinear", align_corners=False,
+        )
         # Batch, i,j
         # if NaN, use Softmax, because no possible undefined
         # SoftMax to approximate max, but we still need the proportion
         # for use in background weights, to discourage overlapping
-        maximumConf = torch.max(
-            maskConfidence ** 2
-            / (torch.sum(maskConfidence, dim=1, keepdim=True) + cfg.positive),
-            dim=1,
-        )[0]
-        if log:
-            writer.add_images(
-                "variance/5_maximumConf",
-                maximumConf.unsqueeze(-1),
-                iteration,
-                dataformats="NHWC",
-            )
         # maximumConf = torch.max(
         # torch.softmax(maskConfidence, dim=1) * maskConfidence, dim=1
         # )[0]
-
-        # Batch, i,j
-        maximumConf = F.interpolate(
-            maximumConf.unsqueeze(1),
-            originalShape,
-            mode="bilinear",
-            align_corners=False,
-        )[:, 0]
-
-        background = F.interpolate(
-            background, originalShape, mode="bilinear", align_corners=False
+        finalConf = (
+            1
+            - torch.max(
+                maskConfidence ** 2
+                / (torch.sum(maskConfidence, dim=1, keepdim=True) + cfg.positive),
+                dim=1,
+            )[0]
         )
-
-        # batch, batch, 3,i,j
-        originalArray = original.unsqueeze(0).repeat(batch, 1, 1, 1, 1)
         if log:
             writer.add_images(
-                "variance/6_originalArray",
-                originalArray.view(-1, 3, *originalShape),
-                iteration,
-                dataformats="NCHW",
-            )
-        # batch, batch, i,j
-        # Confidence in background
-        confidenceArray = 1 - maximumConf.unsqueeze(0).repeat(batch, 1, 1, 1)
-        if log:
-            writer.add_images(
-                "variance/7_confidenceArray",
-                confidenceArray.view(-1, *originalShape).unsqueeze(-1),
-                iteration,
-                dataformats="NHWC",
-            )
-        # batch, batch, 3,i,j
-        backgroundArray = background.unsqueeze(1).repeat(1, batch, 1, 1, 1)
-        if log:
-            writer.add_images(
-                "variance/8_backgroundArray",
-                backgroundArray.view(-1, 3, *originalShape),
+                "variance/5_finalConf",
+                finalConf.unsqueeze(1),
                 iteration,
                 dataformats="NCHW",
             )
 
-        # Squared Error
-        # batch, batch, i,j
-        backgroundLoss = torch.sum((backgroundArray - originalArray) ** 2, dim=2)
+        # img_h, img_w
+        total_bg = torch.sum(finalConf, dim=0)
         if log:
-            writer.add_images(
-                "variance/9_backgroundLoss",
-                backgroundLoss.view(-1, *originalShape).unsqueeze(-1),
-                iteration,
-                dataformats="NHWC",
+            writer.add_image(
+                "variance/6_total_bg", total_bg, iteration, dataformats="HW",
             )
 
-        backgroundLoss = confidenceArray * backgroundLoss
+        # Dim 3, img_h, img_w
+        weightedMean = torch.einsum("abcd,acd->bcd", original, finalConf) / total_bg
+        if log:
+            writer.add_image("variance/7_weightedMean", weightedMean, iteration)
+        # Dim: batch, 3, img_h, img_w
+        squaredDiff = (original - weightedMean) ** 2
+        if log:
+            writer.add_images("variance/8_squaredDiff", squaredDiff, iteration)
+        # Batch,3,img_h, image w
+        weightedDiff = torch.einsum("abcd,acd->abcd", squaredDiff, finalConf)
+        if log:
+            writer.add_images("variance/9_weightedDiff", weightedDiff, iteration)
+
+        weightedVariance = weightedDiff / (total_bg + cfg.positive)
         if log:
             writer.add_images(
-                "variance/10_backgroundLoss",
-                backgroundLoss.view(-1, *originalShape).unsqueeze(-1),
-                iteration,
-                dataformats="NHWC",
+                "variance/10_weightedVariance", weightedVariance, iteration
             )
+
+        if log:
             writer.add_images(
                 "variance/11_reconstruction",
                 reconstruction.view(-1, 3, *reconstructionShape[-2:]),
@@ -343,21 +303,18 @@ class VarianceLoss(nn.Module):
             )
 
         # Batch, Priors, 3, i,j -> Batch*priors, 3, i,j
-        reconstruction = reconstruction.view(-1, 3, *reconstructionShape[-2:])
-        reconstruction = F.interpolate(
-            reconstruction, originalShape, mode="bilinear", align_corners=False,
-        )
-        reconstruction = reconstruction.view(
-            *reconstructionShape[:2], 3, *originalShape
-        )
-
-        # Batch, priors, i,j
-        maskConfidence = F.interpolate(
-            maskConfidence, originalShape, mode="bilinear", align_corners=False,
-        )
+        # reconstruction = reconstruction.view(-1, 3, *reconstructionShape[-2:])
+        # reconstruction = F.interpolate(
+        # reconstruction, originalShape, mode="bilinear", align_corners=False,
+        # )
+        # reconstruction = reconstruction.view(
+        # *reconstructionShape[:2], 3, *originalShape
+        # )
 
         # batch, priors, 3, i, j
-        original = original.unsqueeze(1).repeat(1, reconstructionShape[1], 1, 1, 1)
+        # original = original.unsqueeze(1).repeat(1, reconstructionShape[1], 1, 1, 1)
+        # NOTE: if it breaks after this, restore previous
+        original = original.unsqueeze(1)
         # batch, priors, i, j
         reconstructionLoss = torch.sum((reconstruction - original) ** 2, dim=2)
         writer.add_images(
@@ -374,7 +331,6 @@ class VarianceLoss(nn.Module):
             dataformats="NHWC",
         )
 
-        backgroundLoss = torch.mean(backgroundLoss)
+        backgroundLoss = torch.mean(weightedVariance)
         reconstructionLoss = torch.mean(reconstructionLoss)
         return backgroundLoss, reconstructionLoss
-

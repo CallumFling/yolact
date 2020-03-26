@@ -40,7 +40,6 @@ def rotation_matrix(theta):
     return rot
 
 
-# @snoop
 def gauss_loc(loc, priors, inverse=False):
     # NOTE: Dumb Trick: Periodic Function with Modulo, and with defined
     # NOTE: this is calculated twice, cache to optimize
@@ -164,6 +163,7 @@ def sampling_grid(loc, gridShape, priors, inverse=False):
 
     # mean, cov = gauss_loc(loc)
     mean, rs = gauss_loc(loc, priors, inverse=inverse)
+
     # Batch*Priors, 2,2
     # cov = cov.view(-1, 2, 2)
     rs = rs.view(-1, 2, 2)
@@ -185,7 +185,7 @@ def sampling_grid(loc, gridShape, priors, inverse=False):
             1, locShape[0] * locShape[1], 1
         )
         transformed_coords = torch.einsum(
-            # RS shape: batch*priors, 2,2
+            # Cholesky shape: batch*priors, 2,2
             # mean shape: batch*priors, 2
             "abc,dac->dab",
             rs,
