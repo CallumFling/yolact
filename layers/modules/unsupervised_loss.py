@@ -6,7 +6,7 @@ from torch.nn.utils.rnn import pad_sequence
 from data.config import cfg
 from utils import gaussian, timer
 import math
-from ae import AutoEncoder
+from ae import AutoEncoder, init_weights
 import pdb
 from torchvision.utils import make_grid
 
@@ -38,7 +38,10 @@ class UnsupervisedLoss(nn.Module):
     def __init__(self):
         super(UnsupervisedLoss, self).__init__()
         self.variance = VarianceLoss()
+
         self.autoencoder = AutoEncoder()
+        self.autoencoder.apply(init_weights)
+
         self.num_classes = cfg.num_classes  # Background included
         self.background_label = 0
         self.top_k = cfg.nms_top_k
@@ -179,7 +182,7 @@ class VarianceLoss(nn.Module):
         pass
 
     def forward(self, original, loc, mask, conf, proto, reconstruction, priors):
-        log = iteration % 1 == 0
+        log = iteration % 20 == 0
         # original is [batch_size, 3, img_h, img_w]
         original = original.float()
         if log:
@@ -331,6 +334,9 @@ class VarianceLoss(nn.Module):
             dataformats="NHWC",
         )
 
-        backgroundLoss = torch.mean(weightedVariance)
+        # NOTE NOTE NOTE Disabling background Loss Completely
+        # backgroundLoss = torch.mean(weightedVariance)
+        backgroundLoss = torch.sum(weightedVariance - weightedVariance)
+
         reconstructionLoss = torch.mean(reconstructionLoss)
         return backgroundLoss, reconstructionLoss

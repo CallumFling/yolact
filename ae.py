@@ -25,7 +25,8 @@ class AutoEncoder(nn.Module):
                         out_channels=dims[i + 1],
                         **cfg.encoder_layer_params
                     ),
-                    nn.ReLU(),
+                    nn.BatchNorm2d(dims[i + 1]),
+                    nn.LeakyReLU(),
                 )
             )
 
@@ -33,7 +34,7 @@ class AutoEncoder(nn.Module):
 
         modules = []
         # 3 for RGB
-        dims = list(reversed(cfg.ae_dim)) + [3]
+        dims = list(reversed(cfg.ae_dim))
         args = {
             "mode": "bilinear",
             "scale_factor": cfg.decoder_interpolate_scale,
@@ -45,16 +46,29 @@ class AutoEncoder(nn.Module):
         for i in range(len(dims) - 1):
             modules.append(
                 nn.Sequential(
-                    Interpolate(**args),
+                    # Interpolate(**args),
                     nn.ConvTranspose2d(
                         in_channels=dims[i],
                         out_channels=dims[i + 1],
                         **cfg.decoder_layer_params
                     ),
-                    # if Last, use Sigmoid
-                    (nn.ReLU() if i != (len(dims) - 2) else nn.Sigmoid()),
+                    nn.BatchNorm2d(dims[i + 1]),
+                    nn.LeakyReLU(),
                 )
             )
+        modules.append(
+            nn.Sequential(
+                # Interpolate(**args),
+                nn.ConvTranspose2d(
+                    in_channels=dims[-1],
+                    out_channels=dims[-1],
+                    **cfg.decoder_layer_params
+                ),
+                nn.BatchNorm2d(dims[-1]),
+                nn.Conv2d(dims[-1], out_channels=3, kernel_size=3, padding=1),
+                nn.Sigmoid(),
+            )
+        )
         self.decoder = nn.Sequential(*modules)
 
     def forward(self, original, proto_x, loc, priors):
@@ -128,3 +142,14 @@ class AutoEncoder(nn.Module):
         )
 
         return reconstruction
+
+
+def init_weights(m):
+    # Intialize Conv2d and ConvTranspose2d
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        nn.init.xavier_uniform_(m.weight.data)
+        nn.init.constant_(m.bias.data, 0)
+    elif classname.find("BatchNorm") != -1:
+        nn.init.constant_(m.weight.data, 1)
+        nn.init.constant_(m.bias.data, 0)

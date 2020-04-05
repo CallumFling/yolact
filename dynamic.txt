@@ -1,2 +1,2 @@
-background 10
-reconstruction 1
+background 1e2
+reconstruction 10

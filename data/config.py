@@ -1066,6 +1066,7 @@ unsupervised_config = yolact_plus_resnet50_config.copy(
         "decoder_interpolate_scale": 1.5,
         # for Gaussian
         "max_scale": 1.5,
+        "min_scale": 0.1,
         "max_num_detections": 30,
         # "gauss_iou_samples": 40,
         "max_size": 300,

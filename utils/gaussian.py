@@ -69,7 +69,7 @@ def gauss_loc(loc, priors, inverse=False):
     scale_coeff = (
         torch.sin(scale_coeff / cfg.gauss_sensitivity) * cfg.max_scale
         + cfg.max_scale
-        + cfg.positive
+        + cfg.min_scale
     )
 
     if inverse:
